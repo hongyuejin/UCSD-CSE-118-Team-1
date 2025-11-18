@@ -4,7 +4,7 @@ When you tap the **red STOP button** on the watch, the app calls:
 
 ```kotlin
 suspend fun sendHttpRequestEnd(
-    heartRates: List<Int>,
+    heartRates: List<HeartRateSample>,
     rotations: List<RotationVectorSample>,
     imu: List<ImuSample>,
     duration: Int
@@ -19,13 +19,18 @@ Content-Type: application/json; charset=utf-8
 ## JSON Body Format
 ```json
 {
-  "heart_rates": [94, 95, 95, 94],
+  "heart_rates": [
+    { "t": 500, "bpm": 94 },
+    { "t": 1000, "bpm": 95 },
+    { "t": 1500, "bpm": 95 },
+    { "t": 2000, "bpm": 94 }
+  ],
   "rotation_vectors": [
     { "x": 0.04314, "y": -0.132579, "z": -0.46504, "w": 0.874242 },
     { "x": 0.044147, "y": -0.133233, "z": -0.465508, "w": 0.873843 },
     { "x": 0.044869, "y": -0.133211, "z": -0.464318, "w": 0.874442 },
     ...
-  ],
+  ],  
   "imu": [
     {
       "t": 160,
@@ -47,7 +52,9 @@ Content-Type: application/json; charset=utf-8
     },
     ...
   ],
-  "duration": 2
+  "duration": 2,
+  "heart_rate_hz": 2,
+  "imu_hz": 20
 }
 ```
 
@@ -77,6 +84,14 @@ gx, gy, gz: angular velocity (rad/s) around x/y/z.
 * `duration`
 
 Total recording time in seconds, computed from wall-clock time.
+
+* `heart_rate_hz`
+
+The sampling rate for heart rate in Hz.
+
+* `imu_hz`
+
+The sampling rate for IMU and rotation vector in Hz.
 
 ## Configuration Constants
 

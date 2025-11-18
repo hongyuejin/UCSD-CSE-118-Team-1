@@ -86,11 +86,10 @@ import androidx.core.content.ContextCompat
 
 // Compose state types
 import androidx.compose.runtime.State
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableIntStateOf
 import android.os.SystemClock
 import androidx.compose.runtime.mutableLongStateOf
 import java.io.IOException
+import java.util.Locale
 
 // Logging if you want (optional)
 // import android.util.Log
@@ -99,9 +98,11 @@ import java.io.IOException
 // Data models & constants
 // ----------------------
 
-const val URL = "http://192.168.0.107:5000" // Change to the Server's IP
-const val HEART_RATE_HZ = 2
-const val IMU_HZ = 20       // shared for rotation + accel + gyro
+const val URL = "http://192.168.1.119:5000" // Change to the Server's IP
+const val HEART_RATE_HZ = 0.1 // 6 times per min
+const val IMU_HZ = 20      // shared for rotation + accel + gyro
+
+data class HeartRateSample(val t: Long, val bpm: Int)
 
 data class ImuSample(
     val t: Long,     // timestamp since start (ms)
@@ -379,7 +380,7 @@ fun Page1(
     val scope = rememberCoroutineScope()
 
     // Recorded samples
-    val heartRateSamples = remember { mutableStateListOf<Int>() }
+    val heartRateSamples = remember { mutableStateListOf<HeartRateSample>() }
     val rotationSamples = remember { mutableStateListOf<RotationVectorSample>() }
     val imuSamples = remember { mutableStateListOf<ImuSample>() }
 
@@ -399,10 +400,15 @@ fun Page1(
     // ---- HEART RATE SAMPLING LOOP: HEART_RATE_HZ ----
     LaunchedEffect(isRunning) {
         if (isRunning && HEART_RATE_HZ > 0) {
-            val intervalMs = 1000L / HEART_RATE_HZ
+            val intervalMs = (1000L / HEART_RATE_HZ).toLong()
             while (true) {
                 delay(intervalMs)
-                heartRateSamples.add(heartRateState.value)
+                heartRateSamples.add(
+                    HeartRateSample(
+                        t = SystemClock.elapsedRealtime() - startTimeMillis,
+                        bpm = heartRateState.value
+                    )
+                )
             }
         } else {
             heartRateSamples.clear()
@@ -412,7 +418,7 @@ fun Page1(
     // ---- IMU & ROTATION SAMPLING LOOP: IMU_HZ ----
     LaunchedEffect(isRunning) {
         if (isRunning && IMU_HZ > 0) {
-            val intervalMs = 1000L / IMU_HZ
+            val intervalMs = (1000L / IMU_HZ).toLong()
             while (true) {
                 delay(intervalMs)
 
@@ -520,7 +526,7 @@ suspend fun sendHttpRequestStart() {
 }
 
 suspend fun sendHttpRequestEnd(
-    heartRates: List<Int>,
+    heartRates: List<HeartRateSample>,
     rotations: List<RotationVectorSample>,
     imu: List<ImuSample>,
     duration: Int
@@ -529,7 +535,14 @@ suspend fun sendHttpRequestEnd(
         try {
             val client = OkHttpClient()
 
-            val heartArray = JSONArray(heartRates)
+            val heartArray = JSONArray()
+            heartRates.forEach { hr ->
+                val obj = JSONObject().apply {
+                    put("t", hr.t)
+                    put("bpm", hr.bpm)
+                }
+                heartArray.put(obj)
+            }
 
             val rotationArray = JSONArray()
             rotations.forEach { rv ->
@@ -561,6 +574,8 @@ suspend fun sendHttpRequestEnd(
                 put("rotation_vectors", rotationArray)
                 put("imu", imuArray)
                 put("duration", duration)
+                put("heart_rate_hz", HEART_RATE_HZ)
+                put("imu_hz", IMU_HZ)
             }.toString()
 
             val mediaType = "application/json; charset=utf-8".toMediaType()
@@ -584,7 +599,7 @@ fun formatElapsedTime(totalSeconds: Int): String {
     val hours = totalSeconds / 3600
     val minutes = (totalSeconds % 3600) / 60
     val seconds = totalSeconds % 60
-    return String.format("%02d:%02d:%02d", hours, minutes, seconds)
+    return String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds)
 }
 
 
