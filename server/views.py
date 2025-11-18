@@ -21,5 +21,6 @@ def register_routes(app):
         ok, info = save_raw_json_payload(data_dir, raw)
         if not ok:
             return jsonify({"status": "error", "message": "Failed to save data", "error": info}), 500
-        return jsonify({"status": "success", "message": "Data saved", "filename": info}), 200
+        # info is a session_meta dict with processed filenames and stats
+        return jsonify({"status": "success", "message": "Data saved", "session": info}), 200
 

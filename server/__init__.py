@@ -15,6 +15,8 @@ def _configure_logger() -> None:
 def create_app() -> Flask:
     _configure_logger()
     app = Flask(__name__)
+    from .db import init_db
+    init_db()
     views.register_routes(app)
     return app
 
