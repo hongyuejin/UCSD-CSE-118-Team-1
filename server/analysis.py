@@ -25,9 +25,9 @@ def calculate_hr_zones(hr_values):
     for bpm in hr_values:
         if bpm < 100:
             zones["Resting/Warm Up (<100)"] += 1
-        elif 100 <= bpm < 130:
+        elif bpm < 130:
             zones["Fat Burn (100-130)"] += 1
-        elif 130 <= bpm <= 150:
+        elif bpm < 150:
             zones["Cardio (130-150)"] += 1
         else:
             zones["Peak (>150)"] += 1
@@ -86,6 +86,7 @@ def analyze_session(payload):
             try:
                 hr_values.append(float(val))
             except ValueError:
+                # Skip invalid heart rate values that cannot be converted to float
                 pass
 
     report_lines.append(f"\n[Heart Rate Analysis]")
@@ -170,7 +171,6 @@ def detect_kendo_strikes(imu_rows, threshold=2.0, min_dist_ms=200):
                     # If within window, check if this peak is higher (update the strike)
                     if strikes and magnitude > strikes[-1]:
                         strikes[-1] = magnitude
-                        last_strike_time = t # Update time to the peak
         except (ValueError, IndexError):
             continue
             

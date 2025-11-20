@@ -1,7 +1,6 @@
 import urllib.request
 import json
 import random
-import time
 
 def generate_dummy_data():
     # Generate some dummy heart rate data
