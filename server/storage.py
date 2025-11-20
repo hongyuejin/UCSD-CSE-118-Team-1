@@ -138,6 +138,15 @@ def save_raw_json_payload(directory: Path, raw_text: str) -> Tuple[bool, Any]:
     if not ok:
         return False, info2
 
+    # --- NEW: Run detailed analysis and print to console ---
+    try:
+        from .analysis import analyze_session
+        payload_for_analysis = info2.get("payload") if isinstance(info2, dict) else {}
+        analyze_session(payload_for_analysis)
+    except Exception as e:
+        LOG.error(f"Failed to run session analysis: {e}")
+    # -------------------------------------------------------
+
     payload = info2.get("payload") if isinstance(info2, dict) else {}
 
     duration = None
