@@ -1,0 +1,8 @@
+body { font-family: Arial, Helvetica, sans-serif; margin: 20px; color: #222; }
+header h1 { margin: 0 0 6px 0; }
+header p { margin: 0 0 12px 0; color: #555; }
+table.sessions-table { border-collapse: collapse; width: 100%; max-width: 1100px; }
+table.sessions-table th, table.sessions-table td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+table.sessions-table th { background: #f6f6f6; }
+a { color: #0066cc; text-decoration: none; }
+a:hover { text-decoration: underline; }

@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>KendoPQ — Sessions</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <header>
+        <h1>KendoPQ — Sessions</h1>
+        <p>A simple server-side rendered list of all recorded training sessions.</p>
+    </header>
+
+    <main>
+        {% if sessions %}
+        <table class="sessions-table">
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Recorded</th>
+                    <th>Duration (s)</th>
+                    <th>HR mean</th>
+                    <th>HR max</th>
+                    <th>IMU Filename</th>
+                    <th>HR Filename</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for s in sessions %}
+                <tr>
+                    <td>{{ s.id }}</td>
+                    <td>{{ s.created_at }}</td>
+                    <td>{{ s.duration or '' }}</td>
+                    <td>{{ s.heart_mean or '' }}</td>
+                    <td>{{ s.heart_max or '' }}</td>
+                    <td>{{ s.imu_csv or 'N/A' }}</td>
+                    <td>{{ s.heart_csv or 'N/A' }}</td>
+                    <td><a href="{{ url_for('session_detail', session_id=s.id) }}">View Details</a></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p>No sessions found in the database (sessions.db).</p>
+        {% endif %}
+    </main>
+</body>
+</html>
