@@ -1,102 +1,62 @@
-## Data Upload: `sendHttpRequestEnd`
+# Secondary Wrist Tracker (IMU Only)
 
-When you tap the **red STOP button** on the watch, the app calls:
+This app records continuous Accelerometer and Gyroscope data for the secondary wrist (e.g., left hand for Kendo) and uploads it to a server.
 
-```kotlin
-suspend fun sendHttpRequestEnd(
-    heartRates: List<HeartRateSample>,
-    rotations: List<RotationVectorSample>,
-    imu: List<ImuSample>,
-    duration: Int
-)
+## Data Upload: `sendDataToServer`
+
+When you tap the **red STOP button** on the watch, the app sends a POST request to:
+
 ```
-
-This sends a POST request to:
-```POST $URL/end
+$URL/end
 Content-Type: application/json; charset=utf-8
 ```
 
 ## JSON Body Format
+
 ```json
 {
-  "heart_rates": [
-    { "t": 500, "bpm": 94 },
-    { "t": 1000, "bpm": 95 },
-    { "t": 1500, "bpm": 95 },
-    { "t": 2000, "bpm": 94 }
-  ],
-  "rotation_vectors": [
-    { "x": 0.04314, "y": -0.132579, "z": -0.46504, "w": 0.874242 },
-    { "x": 0.044147, "y": -0.133233, "z": -0.465508, "w": 0.873843 },
-    { "x": 0.044869, "y": -0.133211, "z": -0.464318, "w": 0.874442 },
-    ...
-  ],  
+  "device_id": "wrist_watch_B",
+  "data_type": "imu_only",
+  "imu_hz": 20.0,
+  "sample_count": 300,
   "imu": [
     {
-      "t": 160,
-      "ax": 1.8962077,
-      "ay": 1.9321208,
-      "az": 9.306262,
-      "gx": 0.04520403,
-      "gy": -0.013439035,
-      "gz": 0.014660766
-    },
-    {
-      "t": 215,
-      "ax": 1.8483237,
-      "ay": 2.006341,
-      "az": 9.313444,
-      "gx": 0.012217305,
-      "gy": 0.0036651916,
-      "gz": -0.02443461
+      "t": 1677981234567,
+      "ax": 0.12,
+      "ay": 9.81,
+      "az": 0.05,
+      "gx": 0.01,
+      "gy": -0.02,
+      "gz": 0.00
     },
     ...
-  ],
-  "duration": 2,
-  "heart_rate_hz": 2,
-  "imu_hz": 20
+  ]
 }
 ```
 
 ## Fields
 
-* `heart_rates`
+* `device_id`
+  Identifier for the source device (fixed as "wrist_watch_B").
 
-Array of integer heart-rate readings in bpm, sampled at HEART_RATE_HZ.
-
-* `rotation_vectors`
-
-Array of orientation samples from the Android rotation-vector sensor, stored as quaternions:
-
-x, y, z, w: float components of the rotation vector.
-
-* `imu`
-
-Array of IMU samples combining accelerometer + gyroscope:
-
-t: timestamp in milliseconds since recording started.
-
-ax, ay, az: linear acceleration (m/s²) along x/y/z.
-
-gx, gy, gz: angular velocity (rad/s) around x/y/z.
-
-
-* `duration`
-
-Total recording time in seconds, computed from wall-clock time.
-
-* `heart_rate_hz`
-
-The sampling rate for heart rate in Hz.
+* `data_type`
+  Type of data payload (fixed as imu only).
 
 * `imu_hz`
+  The sampling rate in Hz (20 Hz).
 
-The sampling rate for IMU and rotation vector in Hz.
+* `sample_count`
+  Total number of IMU samples in the payload.
+
+* `imu`
+  Array of IMU samples:
+    * `t`: Epoch timestamp in milliseconds (System.currentTimeMillis), System.currentTimeMillis() returns the number of milliseconds since Jan 1, 1970 UTC.
+    * `ax`, `ay`, `az`: Linear acceleration (m/s²).
+    * `gx`, `gy`, `gz`: Angular velocity (rad/s).
 
 ## Configuration Constants
 
 ```kotlin
-const val URL = "http://192.168.0.107:5000" // Change to your server's IP/port
-const val HEART_RATE_HZ = 2                 // Heart-rate samples per second
-const val IMU_HZ = 20                       // IMU + rotation-vector samples per second
+const val URL = "http://192.168.0.232:5000" // change to your server endpoint
+const val IMU_HZ = 20f                      // change to the desired sampling rate in Hz
 ```
