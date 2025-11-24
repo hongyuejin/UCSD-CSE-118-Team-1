@@ -1,6 +1,6 @@
-# Secondary Wrist Tracker (IMU Only)
+# Secondary Shinai IMU Tracker (IMU Only)
 
-This app records continuous Accelerometer and Gyroscope data for the secondary wrist (e.g., left hand for Kendo) and uploads it to a server.
+This app records continuous Accelerometer and Gyroscope data for placing at the tip of the shinai and uploads it to a server.
 
 ## Data Upload: `sendDataToServer`
 
