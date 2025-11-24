@@ -6,6 +6,7 @@
 package com.example.kendopq.presentation
 
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -98,14 +99,14 @@ import java.util.Locale
 // Data models & constants
 // ----------------------
 
-const val URL = "http://192.168.1.119:5000" // Change to the Server's IP
+const val URL = "http://192.168.1.137:5000" // Change to the Server's IP
 const val HEART_RATE_HZ = 0.1 // 6 times per min
 const val IMU_HZ = 20      // shared for rotation + accel + gyro
 
 data class HeartRateSample(val t: Long, val bpm: Int)
 
 data class ImuSample(
-    val t: Long,     // timestamp since start (ms)
+    val t: Long,     // timestamp (Epoch ms)
     val ax: Float,
     val ay: Float,
     val az: Float,
@@ -115,6 +116,7 @@ data class ImuSample(
 )
 
 data class RotationVectorSample(
+    val t: Long, // timestamp (Epoch ms)
     val x: Float,
     val y: Float,
     val z: Float,
@@ -140,7 +142,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
     // Compose state updated from sensors
     private val heartRateState = mutableIntStateOf(0)
     private val rotationVectorState = mutableStateOf(
-        RotationVectorSample(0f, 0f, 0f, 1f)
+        RotationVectorSample(0L, 0f, 0f, 0f, 1f)
     )
     private val accelState = mutableStateOf(Triple(0f, 0f, 0f))
     private val gyroState = mutableStateOf(Triple(0f, 0f, 0f))
@@ -150,6 +152,9 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         super.onCreate(savedInstanceState)
 
         setTheme(android.R.style.Theme_DeviceDefault)
+
+        // Keep the screen on to prevent sensor throttling in low power mode
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         heartRateSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE)
@@ -259,7 +264,11 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     val y = v[1]
                     val z = v[2]
                     val w = if (v.size >= 4) v[3] else 0f
-                    rotationVectorState.value = RotationVectorSample(x, y, z, w)
+                    // Note: We don't use the timestamp from the event here for the recorded data,
+                    // but we store it in the state.
+                    // Ideally, we would grab System.currentTimeMillis() here too,
+                    // but our sampling loop handles the timestamping for the recorded data.
+                    rotationVectorState.value = RotationVectorSample(0L, x, y, z, w)
                 }
             }
             Sensor.TYPE_ACCELEROMETER -> {
@@ -376,6 +385,11 @@ fun Page1(
     // For display + duration
     var elapsedSeconds by remember { mutableIntStateOf(0) }
     var startTimeMillis by remember { mutableLongStateOf(0L) }
+    
+    // Strike Counting
+    var strikeCount by remember { mutableIntStateOf(0) }
+    var isSwingDetected by remember { mutableStateOf(false) }
+    var lastStrikeTime by remember { mutableLongStateOf(0L) }
 
     val scope = rememberCoroutineScope()
 
@@ -403,10 +417,12 @@ fun Page1(
             val intervalMs = (1000L / HEART_RATE_HZ).toLong()
             while (true) {
                 delay(intervalMs)
+                val bpm = heartRateState.value
+                Log.d("KendoPQ", "Heart Rate recorded: $bpm bpm")
                 heartRateSamples.add(
                     HeartRateSample(
-                        t = SystemClock.elapsedRealtime() - startTimeMillis,
-                        bpm = heartRateState.value
+                        t = System.currentTimeMillis(), // Use Epoch time
+                        bpm = bpm
                     )
                 )
             }
@@ -422,15 +438,35 @@ fun Page1(
             while (true) {
                 delay(intervalMs)
 
+                val now = System.currentTimeMillis() // Use Epoch time
+
                 // Rotation vector
-                rotationSamples.add(rotationVectorState.value)
+                val currentRot = rotationVectorState.value
+                rotationSamples.add(
+                    RotationVectorSample(now, currentRot.x, currentRot.y, currentRot.z, currentRot.w)
+                )
 
                 // Accel + gyro
                 val (ax, ay, az) = accelState.value
                 val (gx, gy, gz) = gyroState.value
+                
+                // --- Strike Detection Logic ---
+                val gyroMag = kotlin.math.sqrt(gx * gx + gy * gy + gz * gz)
+                if (gyroMag > 4.0f) { // Threshold: ~230 deg/s
+                    if (!isSwingDetected && (now - lastStrikeTime > 400)) { // 400ms Cooldown to prevent double counts
+                        strikeCount++
+                        isSwingDetected = true
+                        lastStrikeTime = now
+                        Log.d("KendoPQ", "Strike detected! Total: $strikeCount") // Added Log
+                    }
+                } else if (gyroMag < 2.0f) { // Reset threshold
+                    isSwingDetected = false
+                }
+                // ------------------------------
+                
                 imuSamples.add(
                     ImuSample(
-                        t = SystemClock.elapsedRealtime() - startTimeMillis,
+                        t = now,
                         ax = ax,
                         ay = ay,
                         az = az,
@@ -460,11 +496,19 @@ fun Page1(
             contentAlignment = Alignment.Center
         ) {
             if (isRunning) {
-                Text(
-                    text = formatElapsedTime(elapsedSeconds),
-                    color = Color.White,
-                    textAlign = TextAlign.Center,
-                )
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = formatElapsedTime(elapsedSeconds),
+                        color = Color.White,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Strikes: $strikeCount",
+                        color = Color.Yellow,
+                        style = MaterialTheme.typography.body1
+                    )
+                }
             }
         }
 
@@ -475,6 +519,9 @@ fun Page1(
                 scope.launch {
                     if (!isRunning) {
                         // START
+                        strikeCount = 0
+                        isSwingDetected = false
+                        lastStrikeTime = 0L
                         startTimeMillis = SystemClock.elapsedRealtime()
                         isRunning = true
                     } else {
@@ -483,13 +530,14 @@ fun Page1(
                         val rotToSend = rotationSamples.toList()
                         val imuToSend = imuSamples.toList()
                         val durationSeconds = elapsedSeconds
+                        val finalStrikeCount = strikeCount
 
                         isRunning = false
                         heartRateSamples.clear()
                         rotationSamples.clear()
                         imuSamples.clear()
 
-                        sendHttpRequestEnd(hrToSend, rotToSend, imuToSend, durationSeconds)
+                        sendHttpRequestEnd(hrToSend, rotToSend, imuToSend, durationSeconds, finalStrikeCount)
                     }
                 }
             },
@@ -529,7 +577,8 @@ suspend fun sendHttpRequestEnd(
     heartRates: List<HeartRateSample>,
     rotations: List<RotationVectorSample>,
     imu: List<ImuSample>,
-    duration: Int
+    duration: Int,
+    strikeCount: Int
 ) {
     withContext(Dispatchers.IO) {
         try {
@@ -547,6 +596,7 @@ suspend fun sendHttpRequestEnd(
             val rotationArray = JSONArray()
             rotations.forEach { rv ->
                 val obj = JSONObject().apply {
+                    put("t", rv.t)
                     put("x", rv.x)
                     put("y", rv.y)
                     put("z", rv.z)
@@ -574,6 +624,7 @@ suspend fun sendHttpRequestEnd(
                 put("rotation_vectors", rotationArray)
                 put("imu", imuArray)
                 put("duration", duration)
+                put("strike_count", strikeCount)
                 put("heart_rate_hz", HEART_RATE_HZ)
                 put("imu_hz", IMU_HZ)
             }.toString()
