@@ -7,7 +7,8 @@ suspend fun sendHttpRequestEnd(
     heartRates: List<HeartRateSample>,
     rotations: List<RotationVectorSample>,
     imu: List<ImuSample>,
-    duration: Int
+    duration: Int,
+    strikeCount: Int
 )
 ```
 
@@ -20,40 +21,25 @@ Content-Type: application/json; charset=utf-8
 ```json
 {
   "heart_rates": [
-    { "t": 500, "bpm": 94 },
-    { "t": 1000, "bpm": 95 },
-    { "t": 1500, "bpm": 95 },
-    { "t": 2000, "bpm": 94 }
+    { "t": 1677981234500, "bpm": 94 },
+    { "t": 1677981235500, "bpm": 95 },
+    ...
   ],
   "rotation_vectors": [
-    { "x": 0.04314, "y": -0.132579, "z": -0.46504, "w": 0.874242 },
-    { "x": 0.044147, "y": -0.133233, "z": -0.465508, "w": 0.873843 },
-    { "x": 0.044869, "y": -0.133211, "z": -0.464318, "w": 0.874442 },
+    { "t": 1677981234510, "x": 0.043, "y": -0.132, "z": -0.465, "w": 0.874 },
     ...
-  ],  
+  ],
   "imu": [
     {
-      "t": 160,
-      "ax": 1.8962077,
-      "ay": 1.9321208,
-      "az": 9.306262,
-      "gx": 0.04520403,
-      "gy": -0.013439035,
-      "gz": 0.014660766
-    },
-    {
-      "t": 215,
-      "ax": 1.8483237,
-      "ay": 2.006341,
-      "az": 9.313444,
-      "gx": 0.012217305,
-      "gy": 0.0036651916,
-      "gz": -0.02443461
+      "t": 1677981234510,
+      "ax": 1.89, "ay": 1.93, "az": 9.30,
+      "gx": 0.04, "gy": -0.01, "gz": 0.01
     },
     ...
   ],
-  "duration": 2,
-  "heart_rate_hz": 2,
+  "duration": 12,
+  "strike_count": 15,
+  "heart_rate_hz": 0.1,
   "imu_hz": 20
 }
 ```
@@ -62,28 +48,37 @@ Content-Type: application/json; charset=utf-8
 
 * `heart_rates`
 
-Array of integer heart-rate readings in bpm, sampled at HEART_RATE_HZ.
+Array of heart-rate samples.
+
+t: Epoch timestamp in milliseconds (System.currentTimeMillis).
+
+bpm: Heart rate in beats per minute.
 
 * `rotation_vectors`
 
-Array of orientation samples from the Android rotation-vector sensor, stored as quaternions:
+Array of orientation samples.
 
-x, y, z, w: float components of the rotation vector.
+t: Epoch timestamp in milliseconds.
+
+x, y, z, w: Rotation vector components (quaternion).
 
 * `imu`
 
 Array of IMU samples combining accelerometer + gyroscope:
 
-t: timestamp in milliseconds since recording started.
+t: Epoch timestamp in milliseconds.
 
 ax, ay, az: linear acceleration (m/s²) along x/y/z.
 
 gx, gy, gz: angular velocity (rad/s) around x/y/z.
 
-
 * `duration`
 
-Total recording time in seconds, computed from wall-clock time.
+Total recording time in seconds.
+
+* `strike_count`
+
+Total number of strikes detected on the device.
 
 * `heart_rate_hz`
 
