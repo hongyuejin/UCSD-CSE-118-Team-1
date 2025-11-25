@@ -91,15 +91,16 @@ import android.os.SystemClock
 import androidx.compose.runtime.mutableLongStateOf
 import java.io.IOException
 import java.util.Locale
+import kotlin.math.roundToInt
 
-// Logging if you want (optional)
-// import android.util.Log
+import androidx.compose.ui.platform.LocalContext
+
 
 // ----------------------
 // Data models & constants
 // ----------------------
 
-const val URL = "http://192.168.1.137:5000" // Change to the Server's IP
+const val URL = "http://192.168.0.108:5000" // Change to the Server's IP
 const val HEART_RATE_HZ = 0.1 // 6 times per min
 const val IMU_HZ = 20      // shared for rotation + accel + gyro
 
@@ -121,6 +122,13 @@ data class RotationVectorSample(
     val y: Float,
     val z: Float,
     val w: Float
+)
+
+// Summary returned from /recent
+data class TrainingSummary(
+    val avgHeartRate: Double,
+    val strikeCount: Int,
+    val durationSeconds: Int?
 )
 
 // ----------------------
@@ -264,10 +272,6 @@ class MainActivity : ComponentActivity(), SensorEventListener {
                     val y = v[1]
                     val z = v[2]
                     val w = if (v.size >= 4) v[3] else 0f
-                    // Note: We don't use the timestamp from the event here for the recorded data,
-                    // but we store it in the state.
-                    // Ideally, we would grab System.currentTimeMillis() here too,
-                    // but our sampling loop handles the timestamping for the recorded data.
                     rotationVectorState.value = RotationVectorSample(0L, x, y, z, w)
                 }
             }
@@ -332,6 +336,160 @@ fun WearApp(
     KendoPQTheme {
         val pageCount = 2
         val pagerState = rememberPagerState(pageCount = { pageCount })
+        val scope = rememberCoroutineScope()
+        val context = LocalContext.current
+
+        // ---- Recording state (hoisted so it survives page changes) ----
+        var isRunning by remember { mutableStateOf(false) }
+
+        var elapsedSeconds by remember { mutableIntStateOf(0) }
+        var startTimeMillis by remember { mutableLongStateOf(0L) }
+
+        var strikeCount by remember { mutableIntStateOf(0) }
+        var isSwingDetected by remember { mutableStateOf(false) }
+        var lastStrikeTime by remember { mutableLongStateOf(0L) }
+
+        val heartRateSamples = remember { mutableStateListOf<HeartRateSample>() }
+        val rotationSamples = remember { mutableStateListOf<RotationVectorSample>() }
+        val imuSamples = remember { mutableStateListOf<ImuSample>() }
+
+        // Summary for second page
+        var lastSummary by remember {
+            mutableStateOf(loadSummaryFromPrefs(context))
+        }
+        // current HR for display
+        val currentBpm = heartRateState.value
+
+        // ---- TIMER LOOP: purely for the 00:00:00 display ----
+        LaunchedEffect(isRunning) {
+            if (isRunning) {
+                while (true) {
+                    val now = SystemClock.elapsedRealtime()
+                    elapsedSeconds = ((now - startTimeMillis) / 1000L).toInt()
+                    delay(200L)
+                }
+            } else {
+                elapsedSeconds = 0
+            }
+        }
+
+        // ---- HEART RATE SAMPLING LOOP: HEART_RATE_HZ ----
+        LaunchedEffect(isRunning) {
+            if (isRunning && HEART_RATE_HZ > 0) {
+                val intervalMs = (1000L / HEART_RATE_HZ).toLong()
+                while (true) {
+                    delay(intervalMs)
+                    val bpm = heartRateState.value
+                    Log.d("KendoPQ", "Heart Rate recorded: $bpm bpm")
+                    heartRateSamples.add(
+                        HeartRateSample(
+                            t = System.currentTimeMillis(), // Use Epoch time
+                            bpm = bpm
+                        )
+                    )
+                }
+            } else {
+                heartRateSamples.clear()
+            }
+        }
+
+        // ---- IMU & ROTATION SAMPLING LOOP: IMU_HZ ----
+        LaunchedEffect(isRunning) {
+            if (isRunning && IMU_HZ > 0) {
+                val intervalMs = (1000L / IMU_HZ).toLong()
+                while (true) {
+                    delay(intervalMs)
+
+                    val now = System.currentTimeMillis() // Use Epoch time
+
+                    // Rotation vector
+                    val currentRot = rotationVectorState.value
+                    rotationSamples.add(
+                        RotationVectorSample(now, currentRot.x, currentRot.y, currentRot.z, currentRot.w)
+                    )
+
+                    // Accel + gyro
+                    val (ax, ay, az) = accelState.value
+                    val (gx, gy, gz) = gyroState.value
+
+                    // --- Strike Detection Logic ---
+                    val gyroMag = kotlin.math.sqrt(gx * gx + gy * gy + gz * gz)
+                    if (gyroMag > 4.0f) { // Threshold: ~230 deg/s
+                        if (!isSwingDetected && (now - lastStrikeTime > 400)) { // 400ms Cooldown to prevent double counts
+                            strikeCount++
+                            isSwingDetected = true
+                            lastStrikeTime = now
+                            Log.d("KendoPQ", "Strike detected! Total: $strikeCount")
+                        }
+                    } else if (gyroMag < 2.0f) { // Reset threshold
+                        isSwingDetected = false
+                    }
+                    // ------------------------------
+
+                    imuSamples.add(
+                        ImuSample(
+                            t = now,
+                            ax = ax,
+                            ay = ay,
+                            az = az,
+                            gx = gx,
+                            gy = gy,
+                            gz = gz
+                        )
+                    )
+                }
+            } else {
+                rotationSamples.clear()
+                imuSamples.clear()
+            }
+        }
+
+        fun startRecording() {
+            strikeCount = 0
+            isSwingDetected = false
+            lastStrikeTime = 0L
+            heartRateSamples.clear()
+            rotationSamples.clear()
+            imuSamples.clear()
+            startTimeMillis = SystemClock.elapsedRealtime()
+            isRunning = true
+            // (sendHttpRequestStart is defined but was not used before; keeping behavior the same)
+        }
+
+        fun stopRecording() {
+            val hrToSend = heartRateSamples.toList()
+            val rotToSend = rotationSamples.toList()
+            val imuToSend = imuSamples.toList()
+            val durationSeconds = elapsedSeconds
+            val finalStrikeCount = strikeCount
+
+            isRunning = false
+            heartRateSamples.clear()
+            rotationSamples.clear()
+            imuSamples.clear()
+
+            scope.launch {
+                // 1) send /end with session data (existing behavior)
+                sendHttpRequestEnd(
+                    heartRates = hrToSend,
+                    rotations = rotToSend,
+                    imu = imuToSend,
+                    duration = durationSeconds,
+                    strikeCount = finalStrikeCount
+                )
+
+                // 2) wait 1 second
+                delay(1000L)
+
+                // 3) fetch /recent from the server
+                val summary = fetchRecentSummary()
+                if (summary != null) {
+                    lastSummary = summary
+                    // save to local storage so it's available next time app opens
+                    saveSummaryToPrefs(context, summary)
+                }
+            }
+        }
 
         Box(
             modifier = Modifier
@@ -343,8 +501,15 @@ fun WearApp(
                 modifier = Modifier.fillMaxSize()
             ) { page ->
                 when (page) {
-                    0 -> Page1(heartRateState, rotationVectorState, accelState, gyroState)
-                    1 -> Page2()
+                    0 -> Page1(
+                        isRunning = isRunning,
+                        elapsedSeconds = elapsedSeconds,
+                        strikeCount = strikeCount,
+                        currentBpm = currentBpm,
+                        onStart = { startRecording() },
+                        onStop = { stopRecording() }
+                    )
+                    1 -> Page2(summary = lastSummary)
                 }
             }
 
@@ -375,114 +540,15 @@ fun WearApp(
 
 @Composable
 fun Page1(
-    heartRateState: State<Int>,
-    rotationVectorState: State<RotationVectorSample>,
-    accelState: State<Triple<Float, Float, Float>>,
-    gyroState: State<Triple<Float, Float, Float>>
+    isRunning: Boolean,
+    elapsedSeconds: Int,
+    strikeCount: Int,   // still here for future use, just not shown
+    currentBpm: Int,
+    onStart: () -> Unit,
+    onStop: () -> Unit
 ) {
-    var isRunning by remember { mutableStateOf(false) }
-
-    // For display + duration
-    var elapsedSeconds by remember { mutableIntStateOf(0) }
-    var startTimeMillis by remember { mutableLongStateOf(0L) }
-    
-    // Strike Counting
-    var strikeCount by remember { mutableIntStateOf(0) }
-    var isSwingDetected by remember { mutableStateOf(false) }
-    var lastStrikeTime by remember { mutableLongStateOf(0L) }
-
-    val scope = rememberCoroutineScope()
-
-    // Recorded samples
-    val heartRateSamples = remember { mutableStateListOf<HeartRateSample>() }
-    val rotationSamples = remember { mutableStateListOf<RotationVectorSample>() }
-    val imuSamples = remember { mutableStateListOf<ImuSample>() }
-
-    // ---- TIMER LOOP: purely for the 00:00:00 display ----
-    LaunchedEffect(isRunning) {
-        if (isRunning) {
-            while (true) {
-                val now = SystemClock.elapsedRealtime()
-                elapsedSeconds = ((now - startTimeMillis) / 1000L).toInt()
-                delay(200L)
-            }
-        } else {
-            elapsedSeconds = 0
-        }
-    }
-
-    // ---- HEART RATE SAMPLING LOOP: HEART_RATE_HZ ----
-    LaunchedEffect(isRunning) {
-        if (isRunning && HEART_RATE_HZ > 0) {
-            val intervalMs = (1000L / HEART_RATE_HZ).toLong()
-            while (true) {
-                delay(intervalMs)
-                val bpm = heartRateState.value
-                Log.d("KendoPQ", "Heart Rate recorded: $bpm bpm")
-                heartRateSamples.add(
-                    HeartRateSample(
-                        t = System.currentTimeMillis(), // Use Epoch time
-                        bpm = bpm
-                    )
-                )
-            }
-        } else {
-            heartRateSamples.clear()
-        }
-    }
-
-    // ---- IMU & ROTATION SAMPLING LOOP: IMU_HZ ----
-    LaunchedEffect(isRunning) {
-        if (isRunning && IMU_HZ > 0) {
-            val intervalMs = (1000L / IMU_HZ).toLong()
-            while (true) {
-                delay(intervalMs)
-
-                val now = System.currentTimeMillis() // Use Epoch time
-
-                // Rotation vector
-                val currentRot = rotationVectorState.value
-                rotationSamples.add(
-                    RotationVectorSample(now, currentRot.x, currentRot.y, currentRot.z, currentRot.w)
-                )
-
-                // Accel + gyro
-                val (ax, ay, az) = accelState.value
-                val (gx, gy, gz) = gyroState.value
-                
-                // --- Strike Detection Logic ---
-                val gyroMag = kotlin.math.sqrt(gx * gx + gy * gy + gz * gz)
-                if (gyroMag > 4.0f) { // Threshold: ~230 deg/s
-                    if (!isSwingDetected && (now - lastStrikeTime > 400)) { // 400ms Cooldown to prevent double counts
-                        strikeCount++
-                        isSwingDetected = true
-                        lastStrikeTime = now
-                        Log.d("KendoPQ", "Strike detected! Total: $strikeCount") // Added Log
-                    }
-                } else if (gyroMag < 2.0f) { // Reset threshold
-                    isSwingDetected = false
-                }
-                // ------------------------------
-                
-                imuSamples.add(
-                    ImuSample(
-                        t = now,
-                        ax = ax,
-                        ay = ay,
-                        az = az,
-                        gx = gx,
-                        gy = gy,
-                        gz = gz
-                    )
-                )
-            }
-        } else {
-            rotationSamples.clear()
-            imuSamples.clear()
-        }
-    }
-
-    val timerHeight = 24.dp
+    // Fixed space for HR + timer so layout doesn't shift when recording starts
+    val headerHeight = 56.dp
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -492,54 +558,36 @@ fun Page1(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(timerHeight),
+                .height(headerHeight),
             contentAlignment = Alignment.Center
         ) {
             if (isRunning) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    // Heart rate on top
+                    Text(
+                        text = "${currentBpm.coerceAtLeast(0)} bpm",
+                        color = Color.White,
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.body1
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // Timer
                     Text(
                         text = formatElapsedTime(elapsedSeconds),
                         color = Color.White,
                         textAlign = TextAlign.Center,
                     )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Strikes: $strikeCount",
-                        color = Color.Yellow,
-                        style = MaterialTheme.typography.body1
-                    )
                 }
             }
+            // When not running, we keep this Box empty but same height
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         Button(
             onClick = {
-                scope.launch {
-                    if (!isRunning) {
-                        // START
-                        strikeCount = 0
-                        isSwingDetected = false
-                        lastStrikeTime = 0L
-                        startTimeMillis = SystemClock.elapsedRealtime()
-                        isRunning = true
-                    } else {
-                        // STOP: snapshot samples & duration
-                        val hrToSend = heartRateSamples.toList()
-                        val rotToSend = rotationSamples.toList()
-                        val imuToSend = imuSamples.toList()
-                        val durationSeconds = elapsedSeconds
-                        val finalStrikeCount = strikeCount
-
-                        isRunning = false
-                        heartRateSamples.clear()
-                        rotationSamples.clear()
-                        imuSamples.clear()
-
-                        sendHttpRequestEnd(hrToSend, rotToSend, imuToSend, durationSeconds, finalStrikeCount)
-                    }
-                }
+                if (!isRunning) onStart() else onStop()
             },
             modifier = Modifier
                 .fillMaxWidth(0.8f)
@@ -555,6 +603,8 @@ fun Page1(
         }
     }
 }
+
+
 
 // ----------------------
 // Networking
@@ -646,6 +696,55 @@ suspend fun sendHttpRequestEnd(
     }
 }
 
+/**
+ * GET /recent
+ * Expected JSON example:
+ * {
+ *   "average_heart_rate": 85.3,
+ *   "strike_count": 42,
+ *   "duration": 120
+ * }
+ */
+suspend fun fetchRecentSummary(): TrainingSummary? {
+    return withContext(Dispatchers.IO) {
+        try {
+            val client = OkHttpClient()
+            val request = Request.Builder()
+                .url("$URL/recent")
+                .get()
+                .build()
+
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    Log.e("HTTP", "Error /recent: code=${response.code}")
+                    return@withContext null
+                }
+                val bodyStr = response.body?.string() ?: return@withContext null
+                val json = JSONObject(bodyStr)
+
+                val avgHr = json.optDouble("average_heart_rate", Double.NaN)
+                val strikes = json.optInt("strike_count", 0)
+                val duration =
+                    if (json.has("duration")) json.optInt("duration") else null
+
+                if (avgHr.isNaN()) {
+                    Log.e("HTTP", "No average_heart_rate in /recent")
+                    return@withContext null
+                }
+
+                TrainingSummary(
+                    avgHeartRate = avgHr,
+                    strikeCount = strikes,
+                    durationSeconds = duration
+                )
+            }
+        } catch (e: Exception) {
+            Log.e("HTTP", "Error fetching /recent", e)
+            null
+        }
+    }
+}
+
 fun formatElapsedTime(totalSeconds: Int): String {
     val hours = totalSeconds / 3600
     val minutes = (totalSeconds % 3600) / 60
@@ -653,18 +752,118 @@ fun formatElapsedTime(totalSeconds: Int): String {
     return String.format(Locale.US, "%02d:%02d:%02d", hours, minutes, seconds)
 }
 
+// ---------- Persistence helpers ----------
+
+private const val PREFS_NAME = "kendo_pq_prefs"
+private const val KEY_AVG_HR = "avg_hr"
+private const val KEY_STRIKES = "strikes"
+private const val KEY_DURATION = "duration"
+
+fun saveSummaryToPrefs(context: Context, summary: TrainingSummary) {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    prefs.edit()
+        .putFloat(KEY_AVG_HR, summary.avgHeartRate.toFloat())
+        .putInt(KEY_STRIKES, summary.strikeCount)
+        .apply {
+            if (summary.durationSeconds != null) {
+                putInt(KEY_DURATION, summary.durationSeconds)
+            } else {
+                remove(KEY_DURATION)
+            }
+        }
+        .apply()
+}
+
+fun loadSummaryFromPrefs(context: Context): TrainingSummary? {
+    val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    if (!prefs.contains(KEY_AVG_HR) || !prefs.contains(KEY_STRIKES)) {
+        return null
+    }
+
+    val avgHr = prefs.getFloat(KEY_AVG_HR, -1f)
+    val strikes = prefs.getInt(KEY_STRIKES, 0)
+    val duration =
+        if (prefs.contains(KEY_DURATION)) prefs.getInt(KEY_DURATION, 0) else null
+
+    if (avgHr <= 0f) return null
+
+    return TrainingSummary(
+        avgHeartRate = avgHr.toDouble(),
+        strikeCount = strikes,
+        durationSeconds = duration
+    )
+}
+
 
 @Composable
-fun Page2() {
+fun Page2(summary: TrainingSummary?) {
     Column(
-        modifier = Modifier.fillMaxSize(),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 8.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(
-            text = "This is the second page.",
-            textAlign = TextAlign.Center,
-            color = MaterialTheme.colors.primary,
-        )
+        if (summary == null) {
+            Text(
+                text = "No recent training data.\nFinish a run to see stats.",
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colors.primary
+            )
+        } else {
+            Text(
+                text = "Last Session",
+                style = MaterialTheme.typography.body2,
+                color = MaterialTheme.colors.primary,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Average Heart Rate
+            Text(
+                text = "${summary.avgHeartRate.roundToInt()} bpm",
+                style = MaterialTheme.typography.title3,
+                color = Color.White,
+                textAlign = TextAlign.Center
+            )
+            Text(
+                text = "avg heart rate",
+                style = MaterialTheme.typography.caption1,
+                color = Color.Gray,
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Strike count
+            Text(
+                text = "${summary.strikeCount}",
+                style = MaterialTheme.typography.title3,
+                color = Color.White,
+                textAlign = TextAlign.Center
+            )
+            Text(
+                text = "strikes",
+                style = MaterialTheme.typography.caption1,
+                color = Color.Gray,
+                textAlign = TextAlign.Center
+            )
+
+            if (summary.durationSeconds != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = formatElapsedTime(summary.durationSeconds),
+                    style = MaterialTheme.typography.body1,
+                    color = Color.White,
+                    textAlign = TextAlign.Center
+                )
+                Text(
+                    text = "duration",
+                    style = MaterialTheme.typography.caption1,
+                    color = Color.Gray,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
     }
 }
