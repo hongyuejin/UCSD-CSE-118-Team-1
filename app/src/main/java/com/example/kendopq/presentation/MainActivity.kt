@@ -157,18 +157,23 @@ fun ImuRecorderScreen(
             val delayMs = (1000L / IMU_HZ).toLong()
             // Delay first to avoid immediate sample and race condition on restart
             delay(delayMs) 
-            while (true) {
-                // FIX: Check if we are still recording after delay to avoid ghost samples on stop
-                if (!isRecording) break
+            try {
+                while (true) {
+                    // FIX: Check if we are still recording after delay to avoid ghost samples on stop
+                    if (!isRecording) break
 
-                val now = System.currentTimeMillis() // REQUIREMENT: Epoch time
-                val (ax, ay, az) = getAccel()
-                val (gx, gy, gz) = getGyro()
+                    val now = System.currentTimeMillis() // REQUIREMENT: Epoch time
+                    val (ax, ay, az) = getAccel()
+                    val (gx, gy, gz) = getGyro()
 
-                recordedData.add(ImuSample(now, ax, ay, az, gx, gy, gz))
-                sampleCount = recordedData.size
+                    recordedData.add(ImuSample(now, ax, ay, az, gx, gy, gz))
+                    sampleCount = recordedData.size
 
-                delay(delayMs)
+                    delay(delayMs)
+                }
+            } finally {
+                // FIX: Stop sensors only after the recording loop has exited to avoid race condition
+                onStopSensors()
             }
         }
     }
@@ -206,8 +211,9 @@ fun ImuRecorderScreen(
                     isRecording = true
                 } else {
                     // STOP
+                    // FIX: Setting isRecording to false triggers the LaunchedEffect to exit
+                    // The finally block in LaunchedEffect will stop sensors after the loop exits
                     isRecording = false
-                    onStopSensors()
 
                     // Capture data to send
                     val dataToSend = recordedData.toList()
