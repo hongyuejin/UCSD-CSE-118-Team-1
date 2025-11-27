@@ -52,7 +52,12 @@ def calculate_straightness(imu_rows):
     """
     Calculates straightness based on the variance of motion off the primary axis.
     We assume the primary axis of a strike is the one with the highest variance.
-    Straightness = 1.0 - (variance_minor / variance_major)
+    
+    The formula uses:
+    - variance_major: The largest variance among the three acceleration axes (X, Y, Z)
+    - variance_secondary: The second-largest variance among the three axes
+    
+    Straightness = 1.0 - (variance_secondary / variance_major)
     
     Args:
         imu_rows: List of [t, ax, ay, az, ...]
@@ -78,14 +83,14 @@ def calculate_straightness(imu_rows):
     sorted_vars = np.sort(variances)
     
     major_var = sorted_vars[-1]
-    minor_var = sorted_vars[-2] # Second largest variance
+    secondary_var = sorted_vars[-2]  # Second-largest variance among X, Y, Z
     
     if major_var == 0:
         return 0.0
         
-    # If perfect straight line, minor_var is 0 -> score 1.0
-    # If chaotic, minor_var approaches major_var -> score 0.0
-    return 1.0 - (minor_var / major_var)
+    # If perfect straight line, secondary_var is 0 -> score 1.0
+    # If chaotic, secondary_var approaches major_var -> score 0.0
+    return 1.0 - (secondary_var / major_var)
 
 def calculate_consistency(wrist_rows, shinai_rows):
     """
