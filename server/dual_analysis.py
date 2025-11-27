@@ -194,14 +194,14 @@ def analyze_dual_session(wear_data, shinai_data, params):
         if isinstance(row, dict):
             wrist_accel_rows.append([row.get("t"), row.get("ax"), row.get("ay"), row.get("az")])
         elif isinstance(row, list) and len(row) >= 4:
-            wrist_accel_rows.append(row[:4])
+            wrist_accel_rows.append(row[:4])  # Extract only [t, ax, ay, az]
 
     shinai_accel_rows = []
     for row in shinai_imu:
         if isinstance(row, dict):
             shinai_accel_rows.append([row.get("t"), row.get("ax"), row.get("ay"), row.get("az")])
         elif isinstance(row, list) and len(row) >= 4:
-            shinai_accel_rows.append(row[:4])
+            shinai_accel_rows.append(row[:4])  # Extract only [t, ax, ay, az]
 
     # Calculate Metrics
     max_tip_speed = calculate_tip_speed(wrist_gyro, distance)
