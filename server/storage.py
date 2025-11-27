@@ -139,10 +139,17 @@ def save_raw_json_payload(directory: Path, raw_text: str) -> Tuple[bool, Any]:
         return False, info2
 
     # --- NEW: Run detailed analysis and print to console ---
+    metrics = {
+        "strike_count": 0,
+        "max_strike_force": 0.0,
+        "avg_strike_force": 0.0,
+        "avg_intensity": 0.0,
+        "max_intensity": 0.0
+    }
     try:
         from .analysis import analyze_session
         payload_for_analysis = info2.get("payload") if isinstance(info2, dict) else {}
-        analyze_session(payload_for_analysis)
+        metrics = analyze_session(payload_for_analysis)
     except Exception as e:
         LOG.error(f"Failed to run session analysis: {e}")
     # -------------------------------------------------------
@@ -236,15 +243,26 @@ def save_raw_json_payload(directory: Path, raw_text: str) -> Tuple[bool, Any]:
         heart_max = None
 
     db_path = directory / "sessions.db"
+    
+    # Determine device type
+    device_id = payload.get("device_id", "")
+    device_type = "shinai" if device_id == "wrist_watch_B" else "wear"
+
     try:
         conn = sqlite3.connect(str(db_path))
         cur = conn.cursor()
         created_at = int(datetime.datetime.now().timestamp())
         imu_csv = info2.get("processed", {}).get("imu")
         heart_csv = info2.get("processed", {}).get("heart_rate")
+        
         cur.execute(
-            "INSERT INTO sessions (created_at, raw_filename, imu_csv, heart_csv, duration, imu_hz_measured, imu_hz_sampling_rate_defined, heart_rate_hz_measured, heart_rate_hz_sampling_rate, heart_mean, heart_max) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-            (created_at, fname, imu_csv, heart_csv, duration, imu_hz_measured, imu_hz_defined, heart_rate_hz_measured, heart_hz_defined, heart_mean, heart_max),
+            "INSERT INTO sessions (created_at, raw_filename, imu_csv, heart_csv, duration, imu_hz_measured, imu_hz_sampling_rate_defined, heart_rate_hz_measured, heart_rate_hz_sampling_rate, heart_mean, heart_max, device_type, strike_count, max_strike_force, avg_strike_force, avg_intensity, max_intensity) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                created_at, fname, imu_csv, heart_csv, duration, imu_hz_measured, imu_hz_defined, 
+                heart_rate_hz_measured, heart_hz_defined, heart_mean, heart_max, device_type,
+                metrics.get("strike_count"), metrics.get("max_strike_force"), metrics.get("avg_strike_force"),
+                metrics.get("avg_intensity"), metrics.get("max_intensity")
+            ),
         )
         conn.commit()
         conn.close()

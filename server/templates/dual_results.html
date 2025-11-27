@@ -1,0 +1,68 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>Dual Analysis Results — KendoPQ</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+    <header>
+        <h1>Dual Sensor Analysis Results</h1>
+        <p>Session {{ wear_session.id }} (Wear) + Session {{ shinai_session.id }} (Shinai)</p>
+    </header>
+
+    <main>
+        <h2>Analysis Results</h2>
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 2em;">
+            <tr style="border-bottom: 1px solid #ddd;">
+                <td style="padding: 0.5em; font-weight: bold;">Max Tip Speed</td>
+                <td style="padding: 0.5em;">{{ "%.2f"|format(results.max_tip_speed_mps) }} m/s</td>
+            </tr>
+            <tr style="border-bottom: 1px solid #ddd;">
+                <td style="padding: 0.5em; font-weight: bold;">Max Kinetic Energy</td>
+                <td style="padding: 0.5em;">{{ "%.2f"|format(results.max_kinetic_energy_joules) }} J</td>
+            </tr>
+            <tr style="border-bottom: 1px solid #ddd;">
+                <td style="padding: 0.5em; font-weight: bold;">Straightness Score</td>
+                <td style="padding: 0.5em;">{{ "%.3f"|format(results.straightness_score) }} (0.0 - 1.0)</td>
+            </tr>
+            <tr style="border-bottom: 1px solid #ddd;">
+                <td style="padding: 0.5em; font-weight: bold;">Consistency Score</td>
+                <td style="padding: 0.5em;">{{ "%.3f"|format(results.consistency_score) }} (-1.0 - 1.0)</td>
+            </tr>
+        </table>
+
+        <h2>Session Details</h2>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2em;">
+            <div>
+                <h3>Wear Session {{ wear_session.id }}</h3>
+                <ul>
+                    <li><strong>Recorded:</strong> {{ wear_session.created_at }}</li>
+                    <li><strong>Duration:</strong> {{ wear_session.duration or 'N/A' }} s</li>
+                    <li><strong>Strikes:</strong> {{ wear_session.strike_count or 0 }}</li>
+                    <li><strong>Max Force:</strong> {{ "%.2f"|format(wear_session.max_strike_force) if
+                        wear_session.max_strike_force else 'N/A' }} G</li>
+                </ul>
+            </div>
+            <div>
+                <h3>Shinai Session {{ shinai_session.id }}</h3>
+                <ul>
+                    <li><strong>Recorded:</strong> {{ shinai_session.created_at }}</li>
+                    <li><strong>Duration:</strong> {{ shinai_session.duration or 'N/A' }} s</li>
+                    <li><strong>Strikes:</strong> {{ shinai_session.strike_count or 0 }}</li>
+                    <li><strong>Max Force:</strong> {{ "%.2f"|format(shinai_session.max_strike_force) if
+                        shinai_session.max_strike_force else 'N/A' }} G</li>
+                </ul>
+            </div>
+        </div>
+
+        <p style="margin-top: 2em;">
+            <a href="{{ url_for('dual_analysis_form') }}">Analyze Another Pair</a> |
+            <a href="{{ url_for('index') }}">Back to sessions</a>
+        </p>
+    </main>
+</body>
+
+</html>

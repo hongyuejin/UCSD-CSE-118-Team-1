@@ -23,7 +23,13 @@ def init_db() -> None:
             heart_rate_hz_measured REAL,
             heart_rate_hz_sampling_rate REAL,
             heart_mean REAL,
-            heart_max INTEGER
+            heart_max INTEGER,
+            device_type TEXT,
+            strike_count INTEGER,
+            max_strike_force REAL,
+            avg_strike_force REAL,
+            avg_intensity REAL,
+            max_intensity REAL
         )
         """
     )
