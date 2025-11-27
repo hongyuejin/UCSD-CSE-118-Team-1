@@ -84,7 +84,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
         gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
 
         setContent {
