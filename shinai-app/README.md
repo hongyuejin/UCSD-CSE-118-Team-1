@@ -40,7 +40,7 @@ Content-Type: application/json; charset=utf-8
   Identifier for the source device (fixed as "wrist_watch_B").
 
 * `data_type`
-  Type of data payload (fixed as imu only).
+  Type of data payload (fixed as IMU only).
 
 * `imu_hz`
   The sampling rate in Hz (20 Hz).

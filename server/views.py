@@ -72,7 +72,13 @@ def register_routes(app):
             shinai_payload = load_payload(shinai_id)
             
             if not wear_payload or not shinai_payload:
-                 return jsonify({"status": "error", "message": "Session data not found"}), 404
+                missing = []
+                if not wear_payload:
+                    missing.append("wear")
+                if not shinai_payload:
+                    missing.append("shinai")
+                session_word = "sessions" if len(missing) > 1 else "session"
+                return jsonify({"status": "error", "message": f"{' and '.join(missing)} {session_word} data not found"}), 404
 
             from .dual_analysis import analyze_dual_session
             report = analyze_dual_session(wear_payload, shinai_payload, req_data)
