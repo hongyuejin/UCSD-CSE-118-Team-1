@@ -1,7 +1,6 @@
 import urllib.request
 import json
 import random
-import time
 
 def generate_dummy_data(device_id="wrist_watch_A"):
     # Generate some dummy IMU data
