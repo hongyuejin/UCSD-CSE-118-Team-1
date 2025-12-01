@@ -95,6 +95,11 @@ import kotlin.math.roundToInt
 
 import androidx.compose.ui.platform.LocalContext
 
+// Vibration imports
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+
 
 // ----------------------
 // Data models & constants
@@ -338,6 +343,7 @@ fun WearApp(
         val pagerState = rememberPagerState(pageCount = { pageCount })
         val scope = rememberCoroutineScope()
         val context = LocalContext.current
+        val vibrator = remember { context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator }
 
         // ---- Recording state (hoisted so it survives page changes) ----
         var isRunning by remember { mutableStateOf(false) }
@@ -420,6 +426,16 @@ fun WearApp(
                             isSwingDetected = true
                             lastStrikeTime = now
                             Log.d("KendoPQ", "Strike detected! Total: $strikeCount")
+
+                            // Haptic feedback every 20 strikes
+                            if (strikeCount % 20 == 0) {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                                    vibrator.vibrate(VibrationEffect.createOneShot(150, VibrationEffect.DEFAULT_AMPLITUDE))
+                                } else {
+                                    @Suppress("DEPRECATION")
+                                    vibrator.vibrate(200)
+                                }
+                            }
                         }
                     } else if (gyroMag < 2.0f) { // Reset threshold
                         isSwingDetected = false
@@ -542,13 +558,12 @@ fun WearApp(
 fun Page1(
     isRunning: Boolean,
     elapsedSeconds: Int,
-    strikeCount: Int,   // still here for future use, just not shown
+    strikeCount: Int,
     currentBpm: Int,
     onStart: () -> Unit,
     onStop: () -> Unit
 ) {
-    // Fixed space for HR + timer so layout doesn't shift when recording starts
-    val headerHeight = 56.dp
+    val headerHeight = 70.dp
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -578,12 +593,22 @@ fun Page1(
                         color = Color.White,
                         textAlign = TextAlign.Center,
                     )
+                    
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // Strike Count - Displayed!
+                    Text(
+                        text = "Strikes: $strikeCount",
+                        color = Color.Yellow,
+                        textAlign = TextAlign.Center,
+                        style = MaterialTheme.typography.body2
+                    )
                 }
             }
             // When not running, we keep this Box empty but same height
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         Button(
             onClick = {
@@ -591,7 +616,7 @@ fun Page1(
             },
             modifier = Modifier
                 .fillMaxWidth(0.8f)
-                .height(72.dp),
+                .height(60.dp),
             colors = ButtonDefaults.buttonColors(
                 backgroundColor = if (isRunning) Color.Red else Color.Green
             )
