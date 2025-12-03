@@ -136,6 +136,24 @@ def analyze_session(payload):
     
     print("\n".join(report_lines))
 
+    # Return metrics for storage
+    metrics = {
+        "strike_count": 0,
+        "max_strike_force": 0.0,
+        "avg_strike_force": 0.0,
+        "avg_intensity": 0.0,
+        "max_intensity": 0.0
+    }
+    
+    if imu_rows:
+        metrics["avg_intensity"] = intensity_stats.get("avg_intensity", 0.0)
+        metrics["max_intensity"] = intensity_stats.get("max_intensity", 0.0)
+        metrics["strike_count"] = kendo_stats.get("strike_count", 0)
+        metrics["max_strike_force"] = kendo_stats.get("max_strike_force", 0.0)
+        metrics["avg_strike_force"] = kendo_stats.get("avg_strike_force", 0.0)
+        
+    return metrics
+
 def detect_kendo_strikes(imu_rows, threshold=2.0, min_dist_ms=200):
     """
     Detects sword strikes based on accelerometer peaks.
@@ -149,10 +167,11 @@ def detect_kendo_strikes(imu_rows, threshold=2.0, min_dist_ms=200):
         dict: {
             "strike_count": int,
             "max_strike_force": float,
-            "avg_strike_force": float
+            "avg_strike_force": float,
+            "strike_timestamps": list[float]
         }
     """
-    strikes = []
+    strikes = [] # List of (timestamp, magnitude)
     last_strike_time = -min_dist_ms
     
     for row in imu_rows:
@@ -165,22 +184,23 @@ def detect_kendo_strikes(imu_rows, threshold=2.0, min_dist_ms=200):
             
             if magnitude > threshold:
                 if (t - last_strike_time) > min_dist_ms:
-                    strikes.append(magnitude)
+                    strikes.append((t, magnitude))
                     last_strike_time = t
                 else:
                     # If within window, check if this peak is higher (update the strike)
-                    if strikes and magnitude > strikes[-1]:
-                        strikes[-1] = magnitude
+                    if strikes and magnitude > strikes[-1][1]:
+                        strikes[-1] = (t, magnitude)
+                        last_strike_time = t # Update time to the peak
         except (ValueError, IndexError):
             continue
             
     count = len(strikes)
-    max_force = max(strikes) if strikes else 0.0
-    avg_force = sum(strikes) / count if strikes else 0.0
+    max_force = max([s[1] for s in strikes]) if strikes else 0.0
+    avg_force = sum([s[1] for s in strikes]) / count if strikes else 0.0
     
     return {
         "strike_count": count,
         "max_strike_force": max_force,
-        "avg_strike_force": avg_force
+        "avg_strike_force": avg_force,
+        "strike_timestamps": [s[0] for s in strikes]
     }
-

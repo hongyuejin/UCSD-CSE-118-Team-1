@@ -40,6 +40,153 @@ def register_routes(app):
             return jsonify({"status": "error", "message": "Failed to save data", "error": info}), 500
         # info is a session_meta dict with processed filenames and stats
         return jsonify({"status": "success", "message": "Data saved", "session": info}), 200
+
+    @app.route("/analyze_dual", methods=["POST"])
+    def analyze_dual():
+        try:
+            req_data = request.get_json()
+            if not req_data:
+                return jsonify({"status": "error", "message": "Empty request body"}), 400
+                
+            wear_id = req_data.get("wear_session_id")
+            shinai_id = req_data.get("shinai_session_id")
+            
+            # Load data (simplification: we need to find the files based on ID or filename)
+            # For now, let's assume the client sends the raw filenames or we look them up
+            # In a real app, we'd query the DB. Here, we'll assume filenames are passed or look up by ID.
+            # To keep it simple and robust given current storage.py, let's assume filenames are passed 
+            # OR we implement a helper to load by ID.
+            
+            # Let's try to load by filename from data/raw_data
+            from .storage import make_data_dir
+            data_dir = make_data_dir()
+            raw_dir = data_dir / "raw_data"
+            
+            def load_payload(filename):
+                p = raw_dir / filename
+                if not p.exists():
+                    return None
+                return json.loads(p.read_text(encoding="utf-8"))
+
+            wear_payload = load_payload(wear_id)
+            shinai_payload = load_payload(shinai_id)
+            
+            if not wear_payload or not shinai_payload:
+                missing = []
+                if not wear_payload:
+                    missing.append("wear")
+                if not shinai_payload:
+                    missing.append("shinai")
+                session_word = "sessions" if len(missing) > 1 else "session"
+                return jsonify({"status": "error", "message": f"{' and '.join(missing)} {session_word} data not found"}), 404
+
+            from .dual_analysis import analyze_dual_session
+            report = analyze_dual_session(wear_payload, shinai_payload, req_data)
+            
+            return jsonify({"status": "success", "report": report}), 200
+            
+        except Exception as e:
+            LOG.exception("Dual analysis failed")
+            return jsonify({"status": "error", "message": str(e)}), 500
+
+    @app.route("/dual_analysis", methods=["GET"])
+    def dual_analysis_form():
+        db_path, _, _ = _repo_data_paths()
+        wear_sessions = []
+        shinai_sessions = []
+        
+        if db_path.exists():
+            try:
+                conn = sqlite3.connect(str(db_path))
+                conn.row_factory = sqlite3.Row
+                cur = conn.cursor()
+                
+                # Get wear sessions
+                cur.execute(
+                    "SELECT id, created_at, strike_count FROM sessions WHERE device_type = 'wear' ORDER BY id DESC"
+                )
+                wear_sessions = [
+                    {**dict(r), "created_at": _format_ts(r["created_at"])}
+                    for r in cur.fetchall()
+                ]
+                
+                # Get shinai sessions
+                cur.execute(
+                    "SELECT id, created_at, strike_count FROM sessions WHERE device_type = 'shinai' ORDER BY id DESC"
+                )
+                shinai_sessions = [
+                    {**dict(r), "created_at": _format_ts(r["created_at"])}
+                    for r in cur.fetchall()
+                ]
+                
+                conn.close()
+            except Exception as exc:
+                LOG.exception("Failed to load sessions: %s", exc)
+        
+        return render_template("dual_analysis.html", wear_sessions=wear_sessions, shinai_sessions=shinai_sessions)
+
+    @app.route("/analyze_dual_web", methods=["POST"])
+    def analyze_dual_web():
+        try:
+            wear_id = request.form.get("wear_session_id")
+            shinai_id = request.form.get("shinai_session_id")
+            distance_inches = float(request.form.get("distance_inches", 30))
+            sword_weight_lbs = float(request.form.get("sword_weight_lbs", 1.1))
+            
+            db_path, _, raw_dir = _repo_data_paths()
+            
+            # Load sessions from database
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            
+            cur.execute("SELECT * FROM sessions WHERE id = ?", (wear_id,))
+            wear_row = cur.fetchone()
+            cur.execute("SELECT * FROM sessions WHERE id = ?", (shinai_id,))
+            shinai_row = cur.fetchone()
+            
+            conn.close()
+            
+            if not wear_row or not shinai_row:
+                abort(404)
+            
+            wear_session = dict(wear_row)
+            shinai_session = dict(shinai_row)
+            wear_session["created_at"] = _format_ts(wear_session.get("created_at"))
+            shinai_session["created_at"] = _format_ts(shinai_session.get("created_at"))
+            
+            # Load raw data files
+            def load_payload(filename):
+                p = raw_dir / filename
+                if not p.exists():
+                    return None
+                return json.loads(p.read_text(encoding="utf-8"))
+            
+            wear_payload = load_payload(wear_session["raw_filename"])
+            shinai_payload = load_payload(shinai_session["raw_filename"])
+            
+            if not wear_payload or not shinai_payload:
+                abort(404)
+            
+            # Run dual analysis
+            from .dual_analysis import analyze_dual_session
+            params = {
+                "distance_inches": distance_inches,
+                "sword_weight_lbs": sword_weight_lbs
+            }
+            results = analyze_dual_session(wear_payload, shinai_payload, params)
+            
+            return render_template(
+                "dual_results.html",
+                wear_session=wear_session,
+                shinai_session=shinai_session,
+                results=results
+            )
+            
+        except Exception as e:
+            LOG.exception("Dual analysis web failed")
+            abort(500)
+    
     
     @app.route("/", methods=["GET"])
     def index():
@@ -51,7 +198,7 @@ def register_routes(app):
                 conn.row_factory = sqlite3.Row
                 cur = conn.cursor()
                 cur.execute(
-                    "SELECT id, created_at, duration, heart_mean, heart_max, imu_csv, heart_csv, raw_filename FROM sessions ORDER BY id DESC"
+                    "SELECT id, created_at, duration, heart_mean, heart_max, imu_csv, heart_csv, raw_filename, strike_count, max_strike_force, avg_intensity, device_type FROM sessions ORDER BY id DESC"
                 )
                 
                 # Fetch data and format the timestamp

@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+
+<head>
+    <meta charset="utf-8" />
+    <title>Dual Sensor Analysis — KendoPQ</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+    <header>
+        <h1>Dual Sensor Analysis</h1>
+        <p>Analyze strikes using data from both wrist and shinai sensors</p>
+    </header>
+
+    <main>
+        <form method="POST" action="{{ url_for('analyze_dual_web') }}">
+            <div style="margin-bottom: 1em;">
+                <label for="wear_session"><strong>Wear Session:</strong></label>
+                <select name="wear_session_id" id="wear_session" required style="margin-left: 0.5em; padding: 0.3em;">
+                    <option value="">-- Select Wear Session --</option>
+                    {% for s in wear_sessions %}
+                    <option value="{{ s.id }}">ID {{ s.id }} - {{ s.created_at }} ({{ s.strike_count or 0 }} strikes)
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div style="margin-bottom: 1em;">
+                <label for="shinai_session"><strong>Shinai Session:</strong></label>
+                <select name="shinai_session_id" id="shinai_session" required
+                    style="margin-left: 0.5em; padding: 0.3em;">
+                    <option value="">-- Select Shinai Session --</option>
+                    {% for s in shinai_sessions %}
+                    <option value="{{ s.id }}">ID {{ s.id }} - {{ s.created_at }} ({{ s.strike_count or 0 }} strikes)
+                    </option>
+                    {% endfor %}
+                </select>
+            </div>
+
+            <div style="margin-bottom: 1em;">
+                <label for="distance"><strong>Distance (inches):</strong></label>
+                <input type="number" name="distance_inches" id="distance" value="30" step="0.1" required
+                    style="margin-left: 0.5em; padding: 0.3em; width: 100px;">
+            </div>
+
+            <div style="margin-bottom: 1em;">
+                <label for="weight"><strong>Sword Weight (lbs):</strong></label>
+                <input type="number" name="sword_weight_lbs" id="weight" value="1.1" step="0.01" required
+                    style="margin-left: 0.5em; padding: 0.3em; width: 100px;">
+            </div>
+
+            <button type="submit"
+                style="padding: 0.5em 1em; background-color: #2196F3; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1em;">Analyze</button>
+        </form>
+
+        <p style="margin-top: 2em;"><a href="{{ url_for('index') }}">Back to sessions</a></p>
+    </main>
+</body>
+
+</html>
