@@ -240,4 +240,89 @@ def register_routes(app):
             abort(500)
 
 
+    @app.route("/api/session/<int:session_id>/metrics", methods=["GET"])
+    def api_session_metrics(session_id: int):
+        db_path, processed_dir, _ = _repo_data_paths()
+        if not db_path.exists():
+            return jsonify({"status": "error", "message": "DB not found"}), 404
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+            row = cur.fetchone()
+            if not row:
+                conn.close()
+                return jsonify({"status": "error", "message": "Session not found"}), 404
+            sess = dict(row)
+
+            # Attempt to load first matched shinai series if available
+            shinai_series = None
+            try:
+                matched_raw = sess.get("matched_shinai")
+                if matched_raw:
+                    # matched_shinai may be stored as JSON list or a text
+                    try:
+                        matched_list = json.loads(matched_raw) if isinstance(matched_raw, str) else matched_raw
+                    except Exception:
+                        matched_list = matched_raw
+                    if isinstance(matched_list, list) and len(matched_list) > 0:
+                        rel = matched_list[0]
+                        shinai_path = processed_dir / rel
+                        if shinai_path.exists():
+                            series = []
+                            with shinai_path.open("r", encoding="utf-8") as fh:
+                                import csv as _csv
+                                r = _csv.reader(fh)
+                                headers = next(r, None)
+                                for rowr in r:
+                                    if not rowr:
+                                        continue
+                                    try:
+                                        t = float(rowr[0])
+                                    except Exception:
+                                        continue
+                                    try:
+                                        ax = float(rowr[1]) if rowr[1] != '' else None
+                                        ay = float(rowr[2]) if rowr[2] != '' else None
+                                        az = float(rowr[3]) if rowr[3] != '' else None
+                                    except Exception:
+                                        ax = ay = az = None
+                                    mag = None
+                                    try:
+                                        if ax is not None and ay is not None and az is not None:
+                                            mag = (ax*ax + ay*ay + az*az) ** 0.5
+                                    except Exception:
+                                        mag = None
+                                    series.append({"t": t, "ax": ax, "ay": ay, "az": az, "mag": mag})
+                            shinai_series = series
+            except Exception:
+                LOG.exception("Failed to load matched shinai series for session %s", session_id)
+
+            conn.close()
+            resp = {"status": "success", "session": sess, "shinai_series": shinai_series}
+            return jsonify(resp), 200
+        except Exception as exc:
+            LOG.exception("API metrics failed for %s", session_id)
+            return jsonify({"status": "error", "message": str(exc)}), 500
+
+
+    @app.route("/api/session/<int:session_id>/strikes", methods=["GET"])
+    def api_session_strikes(session_id: int):
+        db_path, _, _ = _repo_data_paths()
+        if not db_path.exists():
+            return jsonify({"status": "error", "message": "DB not found"}), 404
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT id, session_id, t_ms, peak_g, rms_g, integral, half_width_ms, tip_speed_mps FROM strikes WHERE session_id = ? ORDER BY t_ms", (session_id,))
+            rows = [dict(r) for r in cur.fetchall()]
+            conn.close()
+            return jsonify({"status": "success", "strikes": rows}), 200
+        except Exception as exc:
+            LOG.exception("API strikes failed for %s", session_id)
+            return jsonify({"status": "error", "message": str(exc)}), 500
+
+
 

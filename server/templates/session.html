@@ -3,7 +3,7 @@
 
 <head>
     <meta charset="utf-8" />
-    <title>Session {{ session.id }} — KendoPQ</title>
+    <title>Session {{ session.id }} - KendoPQ</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 
@@ -37,6 +37,136 @@
 
         <p><a href="{{ url_for('index') }}">Back to sessions</a></p>
     </main>
+    <hr />
+    <section>
+        <h2>Shinai Time Series & Strikes</h2>
+        <div style="max-width:900px">
+            <canvas id="shinaiChart" width="900" height="240"></canvas>
+        </div>
+        <div style="max-width:600px;margin-top:16px">
+            <canvas id="peaksChart" width="600" height="160"></canvas>
+        </div>
+        <h3>Strikes</h3>
+        <p><button id="downloadCsv">Download strikes CSV</button></p>
+        <table id="strikesTable" border="1" style="border-collapse:collapse">
+            <thead>
+                <tr><th>#</th><th>t_ms</th><th>peak_g</th><th>rms_g</th><th>integral</th><th>half_width_ms</th></tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+    </section>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+    (function(){
+        const sessionId = {{ session.id }};
+        const metricsUrl = `/api/session/${sessionId}/metrics`;
+        const strikesUrl = `/api/session/${sessionId}/strikes`;
+
+        let shinaiSeries = [];
+        let strikes = [];
+
+        function fetchMetrics(){
+            return fetch(metricsUrl).then(r=>r.json()).then(j=>{
+                if(j.status !== 'success') return null;
+                shinaiSeries = j.shinai_series || [];
+                return j.session;
+            }).catch(()=>null);
+        }
+
+        function fetchStrikes(){
+            return fetch(strikesUrl).then(r=>r.json()).then(j=>{
+                if(j.status !== 'success') return [];
+                strikes = j.strikes || [];
+                return strikes;
+            }).catch(()=>[]);
+        }
+
+        function renderCharts(){
+            // Prepare time-series
+            if(shinaiSeries && shinaiSeries.length>0){
+                const t0 = shinaiSeries[0].t || 0;
+                const labels = shinaiSeries.map(s=>((s.t - t0)/1000).toFixed(3));
+                const mags = shinaiSeries.map(s=>s.mag || 0);
+
+                // strike markers: find nearest mag at strike t
+                const strikePoints = [];
+                strikes.forEach((st,i)=>{
+                    if(!st.t_ms) return;
+                    // find closest index
+                    let closest = 0; let bestd = Infinity;
+                    for(let k=0;k<shinaiSeries.length;k++){
+                        const d = Math.abs(shinaiSeries[k].t - st.t_ms);
+                        if(d < bestd){ bestd = d; closest = k; }
+                    }
+                    strikePoints.push({x: labels[closest], y: mags[closest] || 0});
+                });
+
+                const ctx = document.getElementById('shinaiChart').getContext('2d');
+                new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [
+                            { label: 'Accel magnitude (G)', data: mags, borderColor: 'blue', fill:false, pointRadius:0 },
+                            { label: 'Strikes', data: strikePoints.map(p=>p.y), borderColor:'red', backgroundColor:'red', type:'scatter', showLine:false, pointRadius:6 }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        scales: {
+                            x: { display:true, title:{display:true, text:'seconds'} },
+                            y: { display:true, title:{display:true, text:'G'} }
+                        }
+                    }
+                });
+            }
+
+            // Peaks chart (per-strike bar)
+            if(strikes && strikes.length>0){
+                const labels = strikes.map((s,i)=>`#${i+1}`);
+                const peaks = strikes.map(s=>s.peak_g || 0);
+                const ctx2 = document.getElementById('peaksChart').getContext('2d');
+                new Chart(ctx2, {
+                    type: 'bar',
+                    data: { labels: labels, datasets: [{ label:'Peak G', data: peaks, backgroundColor:'orange' }] },
+                    options: { responsive:true, scales:{ y:{ beginAtZero:true } } }
+                });
+            }
+        }
+
+        function renderTable(){
+            const tbody = document.querySelector('#strikesTable tbody');
+            tbody.innerHTML = '';
+            strikes.forEach((s,i)=>{
+                const tr = document.createElement('tr');
+                tr.innerHTML = `<td>${i+1}</td><td>${s.t_ms||''}</td><td>${(s.peak_g||'').toFixed? (s.peak_g||'') : (s.peak_g||'')}</td><td>${s.rms_g||''}</td><td>${s.integral||''}</td><td>${s.half_width_ms||''}</td>`;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function setupDownload(){
+            const btn = document.getElementById('downloadCsv');
+            btn.addEventListener('click',()=>{
+                if(!strikes || strikes.length===0) return alert('No strikes to download');
+                let csv = 't_ms,peak_g,rms_g,integral,half_width_ms,tip_speed_mps\n';
+                strikes.forEach(s=>{
+                    csv += `${s.t_ms||''},${s.peak_g||''},${s.rms_g||''},${s.integral||''},${s.half_width_ms||''},${s.tip_speed_mps||''}\n`;
+                });
+                const blob = new Blob([csv], {type:'text/csv'});
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url; a.download = `session_${sessionId}_strikes.csv`;
+                document.body.appendChild(a); a.click(); a.remove();
+                URL.revokeObjectURL(url);
+            });
+        }
+
+        Promise.all([fetchMetrics(), fetchStrikes()]).then(()=>{
+            renderCharts(); renderTable(); setupDownload();
+        });
+    })();
+    </script>
 </body>
 
 </html>

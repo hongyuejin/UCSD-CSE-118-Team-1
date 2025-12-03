@@ -3,6 +3,7 @@ import logging
 
 LOG = logging.getLogger("sensor_server.analysis")
 
+
 def calculate_hr_zones(hr_values):
     """
     Calculates time spent in different HR zones.
@@ -16,9 +17,9 @@ def calculate_hr_zones(hr_values):
         "Resting/Warm Up (<100)": 0,
         "Fat Burn (100-130)": 0,
         "Cardio (130-150)": 0,
-        "Peak (>150)": 0
+        "Peak (>150)": 0,
     }
-    
+
     if not hr_values:
         return zones
 
@@ -31,36 +32,38 @@ def calculate_hr_zones(hr_values):
             zones["Cardio (130-150)"] += 1
         else:
             zones["Peak (>150)"] += 1
-            
+
     return zones
+
 
 def calculate_movement_intensity(imu_rows):
     """
-    Calculates statistics on movement intensity using accelerometer vector magnitude.
+    Calculates statistics on wrist activity using accelerometer vector magnitude.
+    This is a descriptive metric (G) for general activity - not a per-strike force.
     """
     if not imu_rows:
-        return {"avg_intensity": 0.0, "max_intensity": 0.0}
+        return {"wrist_activity_mean_g": 0.0, "wrist_activity_max_g": 0.0}
 
     intensities = []
     for row in imu_rows:
         # row format: [t, ax, ay, az, gx, gy, gz]
-        # We use ax, ay, az which are at indices 1, 2, 3
         try:
             ax = float(row[1])
             ay = float(row[2])
             az = float(row[3])
-            magnitude = math.sqrt(ax*ax + ay*ay + az*az)
+            magnitude = math.sqrt(ax * ax + ay * ay + az * az)
             intensities.append(magnitude)
         except (ValueError, IndexError):
             continue
 
     if not intensities:
-        return {"avg_intensity": 0.0, "max_intensity": 0.0}
+        return {"wrist_activity_mean_g": 0.0, "wrist_activity_max_g": 0.0}
 
-    avg_intensity = sum(intensities) / len(intensities)
-    max_intensity = max(intensities)
+    mean_g = sum(intensities) / len(intensities)
+    max_g = max(intensities)
 
-    return {"avg_intensity": avg_intensity, "max_intensity": max_intensity}
+    return {"wrist_activity_mean_g": mean_g, "wrist_activity_max_g": max_g}
+
 
 def analyze_session(payload):
     """
@@ -68,9 +71,9 @@ def analyze_session(payload):
     and prints a formatted report to the console.
     """
     report_lines = []
-    report_lines.append("\n" + "="*40)
+    report_lines.append("\n" + "=" * 40)
     report_lines.append("       SESSION ANALYSIS REPORT       ")
-    report_lines.append("="*40)
+    report_lines.append("=" * 40)
 
     # 1. Heart Rate Analysis
     hr_list = payload.get("heart_rates") or []
@@ -81,12 +84,11 @@ def analyze_session(payload):
             val = item.get("bpm") or item.get("value")
         else:
             val = item
-        
+
         if val is not None:
             try:
                 hr_values.append(float(val))
             except ValueError:
-                # Skip invalid heart rate values that cannot be converted to float
                 pass
 
     report_lines.append(f"\n[Heart Rate Analysis]")
@@ -95,7 +97,7 @@ def analyze_session(payload):
         max_hr = max(hr_values)
         report_lines.append(f"Average HR: {avg_hr:.1f} bpm")
         report_lines.append(f"Max HR:     {max_hr:.1f} bpm")
-        
+
         zones = calculate_hr_zones(hr_values)
         report_lines.append("Time in Zones (samples):")
         for zone, count in zones.items():
@@ -117,23 +119,37 @@ def analyze_session(payload):
                 item.get("gy"),
                 item.get("gz"),
             ])
-    
-    report_lines.append(f"\n[Movement & Kendo Analysis]")
-    if imu_rows:
-        intensity_stats = calculate_movement_intensity(imu_rows)
-        report_lines.append(f"Average Intensity: {intensity_stats['avg_intensity']:.2f} G")
-        report_lines.append(f"Max Intensity:     {intensity_stats['max_intensity']:.2f} G")
 
-        # Kendo Stats
+    report_lines.append(f"[Movement & Kendo Summary]")
+    if imu_rows:
+        activity = calculate_movement_intensity(imu_rows)
+        mean_g = activity.get("wrist_activity_mean_g", 0.0)
+        max_g = activity.get("wrist_activity_max_g", 0.0)
+        report_lines.append(f"Wrist activity (mean): {mean_g:.2f} G")
+        report_lines.append(f"Wrist activity (max):  {max_g:.2f} G")
+
+        # Kendo Stats (wrist provides strike count/timestamps only)
         kendo_stats = detect_kendo_strikes(imu_rows)
-        report_lines.append(f"Kendo Strikes:     {kendo_stats['strike_count']}")
-        report_lines.append(f"Max Strike Force:  {kendo_stats['max_strike_force']:.2f} G")
-        report_lines.append(f"Avg Strike Force:  {kendo_stats['avg_strike_force']:.2f} G")
+        strike_count = kendo_stats.get("strike_count", 0)
+        timestamps = kendo_stats.get("strike_timestamps", [])
+        report_lines.append(f"Kendo Strikes (wrist): {strike_count}")
+
+        # Derived time-based metrics
+        avg_isi_ms = 0.0
+        strike_rate_per_min = 0.0
+        if len(timestamps) >= 2:
+            intervals = [j - i for i, j in zip(timestamps[:-1], timestamps[1:])]
+            avg_isi_ms = sum(intervals) / len(intervals)
+            strike_rate_per_min = 60000.0 / avg_isi_ms if avg_isi_ms > 0 else 0.0
+
+        report_lines.append(f"Avg inter-strike interval: {avg_isi_ms:.0f} ms")
+        report_lines.append(f"Strike rate (wrist): {strike_rate_per_min:.1f} strikes/min")
+        report_lines.append("Strike forces: see shinai tip analysis (per-strike peak, RMS, impulse)")
     else:
         report_lines.append("No IMU data available.")
 
-    report_lines.append("\n" + "="*40 + "\n")
-    
+    report_lines.append("\n" + "=" * 40 + "\n")
+
     print("\n".join(report_lines))
 
     # Return metrics for storage
@@ -141,28 +157,40 @@ def analyze_session(payload):
         "strike_count": 0,
         "max_strike_force": 0.0,
         "avg_strike_force": 0.0,
+        # Backwards-compatible DB fields (populated from wrist activity mean/max)
         "avg_intensity": 0.0,
-        "max_intensity": 0.0
+        "max_intensity": 0.0,
+        # New friendly metrics (not yet stored separately in DB)
+        "wrist_activity_mean_g": 0.0,
+        "wrist_activity_max_g": 0.0,
+        "avg_inter_strike_ms": 0.0,
+        "strike_rate_per_min": 0.0,
     }
-    
+
     if imu_rows:
-        metrics["avg_intensity"] = intensity_stats.get("avg_intensity", 0.0)
-        metrics["max_intensity"] = intensity_stats.get("max_intensity", 0.0)
+        metrics["wrist_activity_mean_g"] = mean_g
+        metrics["wrist_activity_max_g"] = max_g
+        # populate compatible fields for DB
+        metrics["avg_intensity"] = mean_g
+        metrics["max_intensity"] = max_g
+        metrics["avg_inter_strike_ms"] = avg_isi_ms
+        metrics["strike_rate_per_min"] = strike_rate_per_min
         metrics["strike_count"] = kendo_stats.get("strike_count", 0)
-        metrics["max_strike_force"] = kendo_stats.get("max_strike_force", 0.0)
-        metrics["avg_strike_force"] = kendo_stats.get("avg_strike_force", 0.0)
-        
+        metrics["max_strike_force"] = 0.0
+        metrics["avg_strike_force"] = 0.0
+
     return metrics
+
 
 def detect_kendo_strikes(imu_rows, threshold=2.0, min_dist_ms=200):
     """
     Detects sword strikes based on accelerometer peaks.
-    
+
     Args:
         imu_rows: List of [t, ax, ay, az, gx, gy, gz]
         threshold: Acceleration magnitude threshold (G) to count as a strike.
         min_dist_ms: Minimum time (ms) between strikes to avoid double counting.
-        
+
     Returns:
         dict: {
             "strike_count": int,
@@ -171,17 +199,17 @@ def detect_kendo_strikes(imu_rows, threshold=2.0, min_dist_ms=200):
             "strike_timestamps": list[float]
         }
     """
-    strikes = [] # List of (timestamp, magnitude)
+    strikes = []  # List of (timestamp, magnitude)
     last_strike_time = -min_dist_ms
-    
+
     for row in imu_rows:
         try:
             t = float(row[0])
             ax = float(row[1])
             ay = float(row[2])
             az = float(row[3])
-            magnitude = math.sqrt(ax*ax + ay*ay + az*az)
-            
+            magnitude = math.sqrt(ax * ax + ay * ay + az * az)
+
             if magnitude > threshold:
                 if (t - last_strike_time) > min_dist_ms:
                     strikes.append((t, magnitude))
@@ -190,17 +218,17 @@ def detect_kendo_strikes(imu_rows, threshold=2.0, min_dist_ms=200):
                     # If within window, check if this peak is higher (update the strike)
                     if strikes and magnitude > strikes[-1][1]:
                         strikes[-1] = (t, magnitude)
-                        last_strike_time = t # Update time to the peak
+                        last_strike_time = t  # Update time to the peak
         except (ValueError, IndexError):
             continue
-            
+
     count = len(strikes)
     max_force = max([s[1] for s in strikes]) if strikes else 0.0
     avg_force = sum([s[1] for s in strikes]) / count if strikes else 0.0
-    
+
     return {
         "strike_count": count,
         "max_strike_force": max_force,
         "avg_strike_force": avg_force,
-        "strike_timestamps": [s[0] for s in strikes]
+        "strike_timestamps": [s[0] for s in strikes],
     }

@@ -4,6 +4,157 @@ import logging
 
 LOG = logging.getLogger("sensor_server.dual_analysis")
 
+
+def calculate_shinai_strike_metrics(shinai_rows, threshold=2.0, min_dist_ms=200, window_ms=150):
+    """
+    Calculate per-strike metrics from shinai tip accel magnitudes.
+
+    Returns summary: count, max_force_g, avg_force_g, avg_rms_g, avg_integral, avg_half_width_ms
+    """
+    from .analysis import detect_kendo_strikes
+    if not shinai_rows:
+        return {
+            "shinai_strike_count": 0,
+            "shinai_max_strike_force": 0.0,
+            "shinai_avg_strike_force": 0.0,
+            "shinai_avg_rms": 0.0,
+            "shinai_avg_integral": 0.0,
+            "shinai_avg_half_width_ms": 0.0,
+        }
+
+    # Ensure rows are list of [t, ax, ay, az, gx, gy, gz] or at least first 4 entries
+    accel_rows = []
+    for row in shinai_rows:
+        try:
+            t = float(row[0])
+            ax = float(row[1])
+            ay = float(row[2])
+            az = float(row[3])
+            mag = math.sqrt(ax*ax + ay*ay + az*az)
+            accel_rows.append((t, mag))
+        except Exception:
+            continue
+
+    if not accel_rows:
+        return {
+            "shinai_strike_count": 0,
+            "shinai_max_strike_force": 0.0,
+            "shinai_avg_strike_force": 0.0,
+            "shinai_avg_rms": 0.0,
+            "shinai_avg_integral": 0.0,
+            "shinai_avg_half_width_ms": 0.0,
+        }
+
+    # Use detect_kendo_strikes to find primary peaks (it expects rows in accel format)
+    # Convert accel_rows back to imu_rows format expected by detect_kendo_strikes
+    imu_like = [[r[0], r[1], 0.0, 0.0, 0, 0, 0] for r in accel_rows]
+    kstats = detect_kendo_strikes(imu_like, threshold=threshold, min_dist_ms=min_dist_ms)
+    timestamps = kstats.get("strike_timestamps", [])
+
+    per_peak_forces = []
+    per_peak_rms = []
+    per_peak_integrals = []
+    per_peak_half_widths = []
+
+    # Build fast access list
+    times = [r[0] for r in accel_rows]
+    mags = [r[1] for r in accel_rows]
+
+    per_strike_list = []
+    for ts in timestamps:
+        start_t = ts - window_ms
+        end_t = ts + window_ms
+        # collect samples in window
+        seg_times = []
+        seg_mags = []
+        for t, m in accel_rows:
+            if t >= start_t and t <= end_t:
+                seg_times.append(t)
+                seg_mags.append(m)
+
+        if not seg_mags:
+            continue
+
+        # Peak force (max magnitude in window)
+        peak = max(seg_mags)
+        per_peak_forces.append(peak)
+
+        # RMS
+        sq = [x*x for x in seg_mags]
+        rms = math.sqrt(sum(sq) / len(sq)) if seg_mags else 0.0
+        per_peak_rms.append(rms)
+
+        # Integral (approximate area under mag curve). Use trapezoid rule with ms -> s
+        integral = 0.0
+        if len(seg_times) > 1:
+            for i in range(1, len(seg_times)):
+                dt = (seg_times[i] - seg_times[i-1]) / 1000.0
+                integral += 0.5 * (seg_mags[i] + seg_mags[i-1]) * dt
+        per_peak_integrals.append(integral)
+
+        # Half-width: time between crossing half-peak before and after peak
+        half = peak * 0.5
+        # find index of peak in seg_mags
+        try:
+            peak_idx = seg_mags.index(peak)
+        except ValueError:
+            peak_idx = None
+
+        half_left = None
+        half_right = None
+        if peak_idx is not None:
+            # search left
+            for i in range(peak_idx, -1, -1):
+                if seg_mags[i] <= half:
+                    half_left = seg_times[i]
+                    break
+            # search right
+            for i in range(peak_idx, len(seg_mags)):
+                if seg_mags[i] <= half:
+                    half_right = seg_times[i]
+                    break
+
+        if half_left is not None and half_right is not None:
+            half_width_ms = half_right - half_left
+        else:
+            half_width_ms = 0.0
+        per_peak_half_widths.append(half_width_ms)
+
+        # Peak timestamp
+        peak_time = None
+        if peak_idx is not None:
+            try:
+                peak_time = seg_times[peak_idx]
+            except Exception:
+                peak_time = ts
+
+        per_strike_list.append({
+            "t_ms": peak_time,
+            "peak_g": peak,
+            "rms_g": rms,
+            "integral": integral,
+            "half_width_ms": half_width_ms,
+            "window_start": start_t,
+            "window_end": end_t,
+        })
+
+    count = len(per_peak_forces)
+    shinai_max = max(per_peak_forces) if per_peak_forces else 0.0
+    shinai_avg = sum(per_peak_forces) / count if count else 0.0
+    avg_rms = sum(per_peak_rms) / count if per_peak_rms else 0.0
+    avg_integral = sum(per_peak_integrals) / count if per_peak_integrals else 0.0
+    avg_half = sum(per_peak_half_widths) / count if per_peak_half_widths else 0.0
+
+    return {
+        "shinai_strike_count": count,
+        "shinai_max_strike_force": shinai_max,
+        "shinai_avg_strike_force": shinai_avg,
+        "shinai_avg_rms": avg_rms,
+        "shinai_avg_integral": avg_integral,
+        "shinai_avg_half_width_ms": avg_half,
+        "per_strikes": per_strike_list,
+    }
+
 def calculate_tip_speed(wrist_gyro, distance_inches):
     """
     Calculates the tip speed based on wrist angular velocity and distance.
@@ -174,8 +325,15 @@ def analyze_dual_session(wear_data, shinai_data, params):
     Returns:
         dict: Analysis report
     """
-    distance = float(params.get("distance_inches", 0))
-    weight = float(params.get("sword_weight_lbs", 0))
+    # Guard against None values in params
+    try:
+        distance = float(params.get("distance_inches") or 0)
+    except Exception:
+        distance = 0.0
+    try:
+        weight = float(params.get("sword_weight_lbs") or 0)
+    except Exception:
+        weight = 0.0
     
     wrist_imu = wear_data.get("imu", [])
     shinai_imu = shinai_data.get("imu", [])
@@ -208,10 +366,21 @@ def analyze_dual_session(wear_data, shinai_data, params):
     max_kinetic_energy = calculate_kinetic_energy(max_tip_speed, weight)
     straightness = calculate_straightness(shinai_accel_rows)
     consistency = calculate_consistency(wrist_accel_rows, shinai_accel_rows)
+    # Strike metrics from shinai tip
+    strike_metrics = calculate_shinai_strike_metrics(shinai_accel_rows)
     
     return {
         "max_tip_speed_mps": max_tip_speed,
         "max_kinetic_energy_joules": max_kinetic_energy,
         "straightness_score": straightness,
-        "consistency_score": consistency
+        "consistency_score": consistency,
+        # Add shinai-derived strike metrics
+        "shinai_strike_count": strike_metrics.get("shinai_strike_count"),
+        "shinai_max_strike_force": strike_metrics.get("shinai_max_strike_force"),
+        "shinai_avg_strike_force": strike_metrics.get("shinai_avg_strike_force"),
+        "shinai_avg_rms": strike_metrics.get("shinai_avg_rms"),
+        "shinai_avg_integral": strike_metrics.get("shinai_avg_integral"),
+        "shinai_avg_half_width_ms": strike_metrics.get("shinai_avg_half_width_ms"),
+        "per_strikes": strike_metrics.get("per_strikes"),
     }
+    
