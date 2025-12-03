@@ -105,7 +105,7 @@ import android.os.Vibrator
 // Data models & constants
 // ----------------------
 
-const val URL = "http://192.168.0.108:5000" // Change to the Server's IP
+const val URL = "http://192.168.1.119:5000" // Change to the Server's IP
 const val HEART_RATE_HZ = 0.1 // 6 times per min
 const val IMU_HZ = 20      // shared for rotation + accel + gyro
 
@@ -172,7 +172,7 @@ class MainActivity : ComponentActivity(), SensorEventListener {
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         heartRateSensor = sensorManager.getDefaultSensor(Sensor.TYPE_HEART_RATE)
         rotationVectorSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
-        accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION)
+        accelSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
 
         checkHeartRatePermission()
