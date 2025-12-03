@@ -269,7 +269,7 @@ suspend fun sendDataToServer(samples: List<ImuSample>) {
 
             // REQUIREMENT: Metadata
             val json = JSONObject().apply {
-                put("device_id", "wrist_watch_B")
+                put("device_id", "shinai_watch")
                 put("data_type", "imu_only")
                 put("imu_hz", IMU_HZ)
                 put("sample_count", samples.size)
