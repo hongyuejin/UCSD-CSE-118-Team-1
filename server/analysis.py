@@ -1,5 +1,6 @@
 import math
 import logging
+import statistics
 
 LOG = logging.getLogger("sensor_server.analysis")
 
@@ -45,22 +46,58 @@ def calculate_movement_intensity(imu_rows):
         return {"wrist_activity_mean_g": 0.0, "wrist_activity_max_g": 0.0}
 
     intensities = []
+    used_source = None
     for row in imu_rows:
-        # row format: [t, ax, ay, az, gx, gy, gz]
+        accel_used = False
         try:
-            ax = float(row[1])
-            ay = float(row[2])
-            az = float(row[3])
-            magnitude = math.sqrt(ax * ax + ay * ay + az * az)
-            intensities.append(magnitude)
-        except (ValueError, IndexError):
+            ax = row[1]
+            ay = row[2]
+            az = row[3]
+            if ax is not None and ay is not None and az is not None:
+                axf = float(ax)
+                ayf = float(ay)
+                azf = float(az)
+                magnitude = math.sqrt(axf * axf + ayf * ayf + azf * azf)
+                intensities.append(magnitude / 9.80665)
+                used_source = "accel"
+                accel_used = True
+        except Exception:
+            pass
+
+        if accel_used:
             continue
+
+        try:
+            gx = row[4]
+            gy = row[5]
+            gz = row[6]
+            if gx is not None and gy is not None and gz is not None:
+                gxf = float(gx)
+                gyf = float(gy)
+                gzf = float(gz)
+                magnitude = math.sqrt(gxf * gxf + gyf * gyf + gzf * gzf)
+                intensities.append(magnitude / 9.80665)
+                if used_source is None:
+                    used_source = "gyro"
+        except Exception:
+            continue
+
+    if used_source:
+        LOG.debug("calculate_movement_intensity used source=%s, samples=%d", used_source, len(intensities))
 
     if not intensities:
         return {"wrist_activity_mean_g": 0.0, "wrist_activity_max_g": 0.0}
 
-    mean_g = sum(intensities) / len(intensities)
-    max_g = max(intensities)
+    try:
+        gravity_bias = statistics.median(intensities)
+    except statistics.StatisticsError:
+        gravity_bias = 1.0
+    if gravity_bias <= 0:
+        gravity_bias = 1.0
+
+    net_values = [max(val - gravity_bias, 0.0) for val in intensities]
+    mean_g = sum(net_values) / len(net_values)
+    max_g = max(net_values) if net_values else 0.0
 
     return {"wrist_activity_mean_g": mean_g, "wrist_activity_max_g": max_g}
 
@@ -108,19 +145,31 @@ def analyze_session(payload):
     # 2. IMU & Kendo Analysis
     imu_list = payload.get("imu") or []
     imu_rows = []
+    accel_count = 0
+    gyro_count = 0
     for item in imu_list:
         if isinstance(item, dict):
-            imu_rows.append([
-                item.get("t"),
-                item.get("ax"),
-                item.get("ay"),
-                item.get("az"),
-                item.get("gx"),
-                item.get("gy"),
-                item.get("gz"),
-            ])
+            t = item.get("t")
+            ax = item.get("ax") if item.get("ax") is not None else item.get("accel_x") if item.get("accel_x") is not None else item.get("x") if item.get("x") is not None else None
+            ay = item.get("ay") if item.get("ay") is not None else item.get("accel_y") if item.get("accel_y") is not None else item.get("y") if item.get("y") is not None else None
+            az = item.get("az") if item.get("az") is not None else item.get("accel_z") if item.get("accel_z") is not None else item.get("z") if item.get("z") is not None else None
+            gx = item.get("gx") if item.get("gx") is not None else item.get("gyro_x") if item.get("gyro_x") is not None else None
+            gy = item.get("gy") if item.get("gy") is not None else item.get("gyro_y") if item.get("gyro_y") is not None else None
+            gz = item.get("gz") if item.get("gz") is not None else item.get("gyro_z") if item.get("gyro_z") is not None else None
+            if ax is not None or ay is not None or az is not None:
+                accel_count += 1
+            if gx is not None or gy is not None or gz is not None:
+                gyro_count += 1
+            imu_rows.append([t, ax, ay, az, gx, gy, gz])
+    LOG.debug(
+        "analyze_session: total imu samples=%d accel_samples=%d gyro_samples=%d",
+        len(imu_rows),
+        accel_count,
+        gyro_count,
+    )
 
     report_lines.append(f"[Movement & Kendo Summary]")
+    strike_count_value = 0
     if imu_rows:
         activity = calculate_movement_intensity(imu_rows)
         mean_g = activity.get("wrist_activity_mean_g", 0.0)
@@ -129,10 +178,20 @@ def analyze_session(payload):
         report_lines.append(f"Wrist activity (max):  {max_g:.2f} G")
 
         # Kendo Stats (wrist provides strike count/timestamps only)
-        kendo_stats = detect_kendo_strikes(imu_rows)
+        reported_strike_count = payload.get("strike_count")
+        target_strike_count = None
+        if reported_strike_count is not None:
+            try:
+                target_strike_count = int(reported_strike_count)
+            except Exception:
+                LOG.debug("Invalid strike_count in payload: %r", reported_strike_count)
+        if target_strike_count is not None and target_strike_count < 0:
+            target_strike_count = None
+        kendo_stats = detect_kendo_strikes(imu_rows, target_count=target_strike_count)
         strike_count = kendo_stats.get("strike_count", 0)
+        strike_count_value = target_strike_count if target_strike_count is not None else strike_count
         timestamps = kendo_stats.get("strike_timestamps", [])
-        report_lines.append(f"Kendo Strikes (wrist): {strike_count}")
+        report_lines.append(f"Kendo Strikes (wrist): {strike_count_value}")
 
         # Derived time-based metrics
         avg_isi_ms = 0.0
@@ -175,14 +234,19 @@ def analyze_session(payload):
         metrics["max_intensity"] = max_g
         metrics["avg_inter_strike_ms"] = avg_isi_ms
         metrics["strike_rate_per_min"] = strike_rate_per_min
-        metrics["strike_count"] = kendo_stats.get("strike_count", 0)
-        metrics["max_strike_force"] = 0.0
-        metrics["avg_strike_force"] = 0.0
+        metrics["strike_count"] = strike_count_value
+        metrics["max_strike_force"] = kendo_stats.get("max_strike_force", 0.0)
+        metrics["avg_strike_force"] = kendo_stats.get("avg_strike_force", 0.0)
+
+    try:
+        LOG.debug("analyze_session returning metrics: %s", metrics)
+    except Exception:
+        pass
 
     return metrics
 
 
-def detect_kendo_strikes(imu_rows, threshold=2.0, min_dist_ms=200):
+def detect_kendo_strikes(imu_rows, threshold=2.0, min_dist_ms=200, target_count=None):
     """
     Detects sword strikes based on accelerometer peaks.
 
@@ -190,37 +254,48 @@ def detect_kendo_strikes(imu_rows, threshold=2.0, min_dist_ms=200):
         imu_rows: List of [t, ax, ay, az, gx, gy, gz]
         threshold: Acceleration magnitude threshold (G) to count as a strike.
         min_dist_ms: Minimum time (ms) between strikes to avoid double counting.
+        target_count: Optional strike count reference from the wearable.
 
     Returns:
         dict: {
             "strike_count": int,
             "max_strike_force": float,
             "avg_strike_force": float,
-            "strike_timestamps": list[float]
+            "strike_timestamps": list[float],
+            "calibrated_threshold": float,
+            "raw_detected_count": int,
         }
     """
-    strikes = []  # List of (timestamp, magnitude)
-    last_strike_time = -min_dist_ms
+    net_series = _build_net_g_series(imu_rows)
+    if not net_series:
+        return {
+            "strike_count": 0,
+            "max_strike_force": 0.0,
+            "avg_strike_force": 0.0,
+            "strike_timestamps": [],
+            "calibrated_threshold": threshold,
+            "raw_detected_count": 0,
+        }
 
-    for row in imu_rows:
-        try:
-            t = float(row[0])
-            ax = float(row[1])
-            ay = float(row[2])
-            az = float(row[3])
-            magnitude = math.sqrt(ax * ax + ay * ay + az * az)
+    strikes = _peak_detect_from_series(net_series, threshold, min_dist_ms)
+    raw_detected = len(strikes)
+    used_threshold = threshold
 
-            if magnitude > threshold:
-                if (t - last_strike_time) > min_dist_ms:
-                    strikes.append((t, magnitude))
-                    last_strike_time = t
-                else:
-                    # If within window, check if this peak is higher (update the strike)
-                    if strikes and magnitude > strikes[-1][1]:
-                        strikes[-1] = (t, magnitude)
-                        last_strike_time = t  # Update time to the peak
-        except (ValueError, IndexError):
-            continue
+    if target_count and target_count > 0:
+        used_threshold, strikes = _calibrate_threshold_to_target(
+            net_series,
+            min_dist_ms,
+            target_count,
+            threshold,
+            strikes,
+        )
+        LOG.debug(
+            "detect_kendo_strikes calibrated using target=%s raw=%s final=%s threshold=%.2f",
+            target_count,
+            raw_detected,
+            len(strikes),
+            used_threshold,
+        )
 
     count = len(strikes)
     max_force = max([s[1] for s in strikes]) if strikes else 0.0
@@ -231,4 +306,204 @@ def detect_kendo_strikes(imu_rows, threshold=2.0, min_dist_ms=200):
         "max_strike_force": max_force,
         "avg_strike_force": avg_force,
         "strike_timestamps": [s[0] for s in strikes],
+        "calibrated_threshold": used_threshold,
+        "raw_detected_count": raw_detected,
+    }
+
+
+def _build_net_g_series(imu_rows):
+    series = []
+    fallback_time = 0.0
+    for row in imu_rows:
+        used_fallback_time = False
+        try:
+            timestamp = float(row[0])
+        except (TypeError, ValueError):
+            timestamp = fallback_time
+            used_fallback_time = True
+
+        if used_fallback_time:
+            fallback_time += 10.0
+
+        ax = row[1]
+        ay = row[2]
+        az = row[3]
+        if ax is None or ay is None or az is None:
+            continue
+
+        try:
+            axf = float(ax)
+            ayf = float(ay)
+            azf = float(az)
+        except (TypeError, ValueError):
+            continue
+
+        magnitude = math.sqrt(axf * axf + ayf * ayf + azf * azf) / 9.80665
+        net_g = max(magnitude - 1.0, 0.0)
+        series.append((timestamp, net_g))
+
+    return series
+
+
+def _peak_detect_from_series(series, threshold, min_dist_ms):
+    strikes = []
+    if not series:
+        return strikes
+
+    last_strike_time = series[0][0] - min_dist_ms
+    for timestamp, magnitude in series:
+        if magnitude > threshold:
+            if (timestamp - last_strike_time) > min_dist_ms:
+                strikes.append((timestamp, magnitude))
+                last_strike_time = timestamp
+            elif strikes and magnitude > strikes[-1][1]:
+                strikes[-1] = (timestamp, magnitude)
+                last_strike_time = timestamp
+    return strikes
+
+
+def _calibrate_threshold_to_target(series, min_dist_ms, target_count, base_threshold, base_result):
+    if not series or target_count <= 0:
+        return base_threshold, base_result
+
+    magnitudes = [value for _, value in series]
+    if not magnitudes:
+        return base_threshold, base_result
+
+    low = 0.1
+    high = max(max(magnitudes) + 0.5, base_threshold + 0.5)
+    best_threshold = base_threshold
+    best_strikes = base_result
+    best_diff = abs(len(base_result) - target_count)
+
+    for _ in range(8):
+        if high - low < 0.05:
+            break
+        mid = (low + high) / 2.0
+        candidate = _peak_detect_from_series(series, mid, min_dist_ms)
+        diff = abs(len(candidate) - target_count)
+
+        if diff < best_diff or (diff == best_diff and abs(mid - base_threshold) < abs(best_threshold - base_threshold)):
+            best_diff = diff
+            best_strikes = candidate
+            best_threshold = mid
+
+        if len(candidate) > target_count:
+            low = mid
+        elif len(candidate) < target_count:
+            high = mid
+        else:
+            break
+
+    return best_threshold, best_strikes
+
+
+def interpret_session_metrics(metrics: dict) -> dict:
+    """
+    Produce a beginner-friendly interpretation of numeric session metrics.
+
+    Input expects keys commonly produced by analysis functions, for example:
+      - avg_intensity (G)
+      - straightness_score (0..1)
+      - consistency_score (0..1)
+      - heart_mean (bpm)
+
+    Returns a dict with categorical labels and a short recommendation string.
+    """
+    # Read numeric inputs with safe fallbacks
+    avg_intensity = 0.0
+    try:
+        avg_intensity = float(metrics.get("avg_intensity", metrics.get("wrist_activity_mean_g", 0.0)) or 0.0)
+    except Exception:
+        avg_intensity = 0.0
+
+    straightness = 0.0
+    try:
+        straightness = float(metrics.get("straightness_score", 0.0) or 0.0)
+    except Exception:
+        straightness = 0.0
+
+    consistency = 0.0
+    try:
+        consistency = float(metrics.get("consistency_score", 0.0) or 0.0)
+    except Exception:
+        consistency = 0.0
+
+    heart_mean = 0.0
+    try:
+        heart_mean = float(metrics.get("heart_mean", 0.0) or 0.0)
+    except Exception:
+        heart_mean = 0.0
+
+    # Effort categories (based on avg_intensity in G) - tuneable thresholds
+    if avg_intensity < 1.5:
+        effort_cat = "Low"
+        effort_color = "#4CAF50"
+    elif avg_intensity < 3.5:
+        effort_cat = "Moderate"
+        effort_color = "#FF9800"
+    else:
+        effort_cat = "High"
+        effort_color = "#F44336"
+
+    # Control score: weighted combination of straightness & consistency
+    # If both scores are missing/zero, mark as N/A instead of penalizing
+    control_score = None
+    # Treat N/A only when both are missing (None), not when they are 0.0
+    if (metrics.get("straightness_score") is None) and (metrics.get("consistency_score") is None):
+        control_cat = "N/A"
+        control_color = "#9E9E9E"
+        control_score = None
+    else:
+        control_score = (0.6 * straightness) + (0.4 * consistency)
+        if control_score >= 0.75:
+            control_cat = "Good"
+            control_color = "#4CAF50"
+        elif control_score >= 0.5:
+            control_cat = "Average"
+            control_color = "#FFEB3B"
+        else:
+            control_cat = "Needs work"
+            control_color = "#F44336"
+
+    # Heart categories
+    if heart_mean == 0:
+        heart_cat = "N/A"
+        heart_color = "#9E9E9E"
+    elif heart_mean < 90:
+        heart_cat = "Calm"
+        heart_color = "#4CAF50"
+    elif heart_mean < 130:
+        heart_cat = "Moderate"
+        heart_color = "#FF9800"
+    else:
+        heart_cat = "Elevated"
+        heart_color = "#F44336"
+
+    # Simple recommendations based on combinations
+    recommendation = ""
+    if effort_cat == "High" and control_cat == "Needs work":
+        recommendation = "You're swinging hard but losing form - focus on slow control drills (3x1min)."
+    elif effort_cat == "Low" and control_cat == "Good":
+        recommendation = "Good control - try adding short power reps while keeping form."
+    elif control_cat == "Needs work":
+        recommendation = "Work on straightness and repeatability: slow, focused swings."
+    else:
+        recommendation = "Nice session - keep practicing and watch trends over time."
+
+    # If heart is elevated, add short tip
+    if heart_cat == "Elevated":
+        recommendation += " Rest longer between sets if needed."
+
+    return {
+        "effort_category": effort_cat,
+        "effort_color": effort_color,
+        "effort_value": round(avg_intensity, 2),
+        "control_category": control_cat,
+        "control_color": control_color,
+        "control_score": (round(control_score, 2) if control_score is not None else None),
+        "heart_category": heart_cat,
+        "heart_color": heart_color,
+        "heart_value": round(heart_mean, 0),
+        "recommendation": recommendation,
     }

@@ -11,7 +11,6 @@ def calculate_shinai_strike_metrics(shinai_rows, threshold=2.0, min_dist_ms=200,
 
     Returns summary: count, max_force_g, avg_force_g, avg_rms_g, avg_integral, avg_half_width_ms
     """
-    from .analysis import detect_kendo_strikes
     if not shinai_rows:
         return {
             "shinai_strike_count": 0,
@@ -23,6 +22,7 @@ def calculate_shinai_strike_metrics(shinai_rows, threshold=2.0, min_dist_ms=200,
         }
 
     # Ensure rows are list of [t, ax, ay, az, gx, gy, gz] or at least first 4 entries
+    # Convert to G units with gravity compensation for peak detection
     accel_rows = []
     for row in shinai_rows:
         try:
@@ -30,8 +30,12 @@ def calculate_shinai_strike_metrics(shinai_rows, threshold=2.0, min_dist_ms=200,
             ax = float(row[1])
             ay = float(row[2])
             az = float(row[3])
-            mag = math.sqrt(ax*ax + ay*ay + az*az)
-            accel_rows.append((t, mag))
+            mag_acc = math.sqrt(ax*ax + ay*ay + az*az)
+            # Convert m/s? to G units and subtract gravity baseline
+            g_units = (mag_acc / 9.80665) - 1.0
+            if g_units < 0:
+                g_units = 0.0
+            accel_rows.append((t, g_units))
         except Exception:
             continue
 
@@ -45,11 +49,17 @@ def calculate_shinai_strike_metrics(shinai_rows, threshold=2.0, min_dist_ms=200,
             "shinai_avg_half_width_ms": 0.0,
         }
 
-    # Use detect_kendo_strikes to find primary peaks (it expects rows in accel format)
-    # Convert accel_rows back to imu_rows format expected by detect_kendo_strikes
-    imu_like = [[r[0], r[1], 0.0, 0.0, 0, 0, 0] for r in accel_rows]
-    kstats = detect_kendo_strikes(imu_like, threshold=threshold, min_dist_ms=min_dist_ms)
-    timestamps = kstats.get("strike_timestamps", [])
+    # Direct peak detection on gravity-compensated G values
+    times = [r[0] for r in accel_rows]
+    mags = [r[1] for r in accel_rows]
+    
+    # Find peaks above threshold
+    timestamps = []
+    for i in range(1, len(mags) - 1):
+        if mags[i] > threshold and mags[i] >= mags[i-1] and mags[i] >= mags[i+1]:
+            # Check minimum distance from previous peak
+            if not timestamps or (times[i] - timestamps[-1]) >= min_dist_ms:
+                timestamps.append(times[i])
 
     per_peak_forces = []
     per_peak_rms = []
@@ -145,6 +155,7 @@ def calculate_shinai_strike_metrics(shinai_rows, threshold=2.0, min_dist_ms=200,
     avg_integral = sum(per_peak_integrals) / count if per_peak_integrals else 0.0
     avg_half = sum(per_peak_half_widths) / count if per_peak_half_widths else 0.0
 
+    # Gravity compensation already applied during conversion, no need to subtract again
     return {
         "shinai_strike_count": count,
         "shinai_max_strike_force": shinai_max,

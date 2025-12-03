@@ -277,9 +277,18 @@ def save_raw_json_payload(directory: Path, raw_text: str) -> Tuple[bool, Any]:
         metrics = analyze_session(payload_for_analysis)
     except Exception:
         LOG.exception("Failed to run session analysis")
+    LOG.debug("analyze_session metrics for %s: %s", fname, metrics)
     # -------------------------------------------------------
 
     payload = info2.get("payload") if isinstance(info2, dict) else {}
+
+    # Prefer wrist-reported strike count if available in payload
+    try:
+        payload_strike_count = payload.get("strike_count")
+        if payload_strike_count is not None:
+            metrics["strike_count"] = int(payload_strike_count)
+    except Exception:
+        LOG.debug("Failed to coerce payload strike_count for %s", fname)
 
     duration = None
     try:
@@ -375,6 +384,13 @@ def save_raw_json_payload(directory: Path, raw_text: str) -> Tuple[bool, Any]:
     device_type = "shinai" if data_type == "imu_only" else "wear"
 
     try:
+        # Ensure DB schema exists before opening connection
+        try:
+            from .db import init_db
+            init_db()
+        except Exception:
+            LOG.exception("Failed to ensure DB initialized via init_db")
+
         conn = sqlite3.connect(str(db_path))
         cur = conn.cursor()
         created_at = int(datetime.datetime.now().timestamp())
@@ -386,7 +402,54 @@ def save_raw_json_payload(directory: Path, raw_text: str) -> Tuple[bool, Any]:
             matched_json = json.dumps(matched_list) if matched_list else None
         except Exception:
             matched_json = None
-        # If there are matched shinai files, run dual analysis to derive shinai/dual metrics
+        # When processing a shinai payload, propagate matched shinai file paths
+        # into the corresponding wear session rows so the UI can render charts.
+        try:
+            if device_type == "shinai" and matched_list:
+                for relpath in matched_list:
+                    try:
+                        # relpath example: sessions/session_<start>_<end>/matched_shinai_<start>_<end>_imu.csv
+                        m = re.match(r"sessions/session_(\d+)_(\d+)/", relpath)
+                        if not m:
+                            continue
+                        s_start = m.group(1)
+                        s_end = m.group(2)
+                        session_folder_rel = f"sessions/session_{s_start}_{s_end}"
+                        # Find wear session whose imu_csv is in the same session folder
+                        cur.execute(
+                            "SELECT id, matched_shinai FROM sessions WHERE device_type='wear' AND imu_csv LIKE ? ORDER BY id DESC LIMIT 1",
+                            (session_folder_rel + "/%_imu.csv",)
+                        )
+                        wear_row = cur.fetchone()
+                        if not wear_row:
+                            # As a fallback, search any wear rows with session window in raw_filename
+                            cur.execute(
+                                "SELECT id, matched_shinai FROM sessions WHERE device_type='wear' AND imu_csv LIKE ?",
+                                (session_folder_rel + "/%_imu.csv",)
+                            )
+                            wear_row = cur.fetchone()
+                        if not wear_row:
+                            continue
+
+                        wear_id = wear_row[0]
+                        existing = wear_row[1]
+                        try:
+                            existing_list = json.loads(existing) if existing else []
+                        except Exception:
+                            existing_list = []
+                        # Append if not already present
+                        if relpath not in existing_list:
+                            existing_list.append(relpath)
+                        new_json = json.dumps(existing_list)
+                        cur.execute(
+                            "UPDATE sessions SET matched_shinai = ? WHERE id = ?",
+                            (new_json, wear_id)
+                        )
+                    except Exception:
+                        LOG.exception("Failed to update wear session with matched shinai %s", relpath)
+        except Exception:
+            LOG.exception("Error while propagating matched shinai to wear sessions")
+                # If there are matched shinai files, run dual analysis to derive shinai/dual metrics
         dual_metrics = {}
         try:
             if matched_list and len(matched_list) > 0:
@@ -429,27 +492,94 @@ def save_raw_json_payload(directory: Path, raw_text: str) -> Tuple[bool, Any]:
                 except Exception:
                     LOG.exception("Exception while running analyze_dual_session")
                     dual_metrics = {}
+
+            # If there was no matched wrist session but this payload contains shinai IMU (shinai-only),
+            # attempt to analyze the shinai data standalone so we can populate per-strike metrics.
+            data_type_local = payload.get("data_type")
+            if (not dual_metrics or len(dual_metrics) == 0) and (data_type_local == "imu_only" or shinai_csv):
+                try:
+                    # Build shinai imu list from payload if available, otherwise try reading shinai_csv
+                    shinai_imu = []
+                    imu_list_from_payload = payload.get("imu") or []
+                    if imu_list_from_payload:
+                        for item in imu_list_from_payload:
+                            if isinstance(item, dict):
+                                try:
+                                    shinai_imu.append({
+                                        "t": float(item.get("t")),
+                                        "ax": float(item.get("ax")) if item.get("ax") is not None and item.get("ax") != '' else None,
+                                        "ay": float(item.get("ay")) if item.get("ay") is not None and item.get("ay") != '' else None,
+                                        "az": float(item.get("az")) if item.get("az") is not None and item.get("az") != '' else None,
+                                        "gx": float(item.get("gx")) if item.get("gx") is not None and item.get("gx") != '' else None,
+                                        "gy": float(item.get("gy")) if item.get("gy") is not None and item.get("gy") != '' else None,
+                                        "gz": float(item.get("gz")) if item.get("gz") is not None and item.get("gz") != '' else None,
+                                    })
+                                except Exception:
+                                    continue
+                    elif shinai_csv:
+                        shinai_path = directory / "processed_data" / shinai_csv
+                        try:
+                            with shinai_path.open("r", encoding="utf-8") as fh:
+                                reader = csv.reader(fh)
+                                headers = next(reader, None)
+                                for row in reader:
+                                    if not row:
+                                        continue
+                                    try:
+                                        shinai_imu.append({
+                                            "t": float(row[0]),
+                                            "ax": float(row[1]) if row[1] != '' else None,
+                                            "ay": float(row[2]) if row[2] != '' else None,
+                                            "az": float(row[3]) if row[3] != '' else None,
+                                            "gx": float(row[4]) if len(row) > 4 and row[4] != '' else None,
+                                            "gy": float(row[5]) if len(row) > 5 and row[5] != '' else None,
+                                            "gz": float(row[6]) if len(row) > 6 and row[6] != '' else None,
+                                        })
+                                    except Exception:
+                                        continue
+                        except Exception:
+                            shinai_imu = []
+
+                    if shinai_imu:
+                        wear_data = {"imu": payload.get("imu", [])}
+                        shinai_data = {"imu": shinai_imu}
+                        params = {
+                            "distance_inches": payload.get("distance_inches"),
+                            "sword_weight_lbs": payload.get("sword_weight_lbs")
+                        }
+                        try:
+                            from .dual_analysis import analyze_dual_session
+                            dual_metrics = analyze_dual_session(wear_data, shinai_data, params) or {}
+                        except Exception:
+                            LOG.exception("Exception while running analyze_dual_session for shinai-only payload")
+                            dual_metrics = {}
+                except Exception:
+                    LOG.exception("Error while attempting shinai-only analysis")
+                    dual_metrics = {}
         except Exception:
             dual_metrics = {}
 
+        insert_params = (
+            created_at, fname, imu_csv, heart_csv, shinai_csv, matched_json, duration, imu_hz_measured, imu_hz_defined,
+            heart_rate_hz_measured, heart_hz_defined, heart_mean, heart_max, device_type,
+            metrics.get("strike_count"), metrics.get("max_strike_force"), metrics.get("avg_strike_force"),
+            metrics.get("avg_intensity"), metrics.get("max_intensity"),
+            dual_metrics.get("max_tip_speed_mps"), dual_metrics.get("max_kinetic_energy_joules"),
+            dual_metrics.get("straightness_score"), dual_metrics.get("consistency_score"),
+            dual_metrics.get("shinai_strike_count"), dual_metrics.get("shinai_max_strike_force"),
+            dual_metrics.get("shinai_avg_strike_force")
+        )
+        LOG.debug("Inserting session row with params: %s", insert_params)
         cur.execute(
             "INSERT INTO sessions (created_at, raw_filename, imu_csv, heart_csv, shinai_csv, matched_shinai, duration, imu_hz_measured, imu_hz_sampling_rate_defined, heart_rate_hz_measured, heart_rate_hz_sampling_rate, heart_mean, heart_max, device_type, strike_count, max_strike_force, avg_strike_force, avg_intensity, max_intensity, max_tip_speed_mps, max_kinetic_energy_joules, straightness_score, consistency_score, shinai_strike_count, shinai_max_strike_force, shinai_avg_strike_force) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                created_at, fname, imu_csv, heart_csv, shinai_csv, matched_json, duration, imu_hz_measured, imu_hz_defined,
-                heart_rate_hz_measured, heart_hz_defined, heart_mean, heart_max, device_type,
-                metrics.get("strike_count"), metrics.get("max_strike_force"), metrics.get("avg_strike_force"),
-                metrics.get("avg_intensity"), metrics.get("max_intensity"),
-                dual_metrics.get("max_tip_speed_mps"), dual_metrics.get("max_kinetic_energy_joules"),
-                dual_metrics.get("straightness_score"), dual_metrics.get("consistency_score"),
-                dual_metrics.get("shinai_strike_count"), dual_metrics.get("shinai_max_strike_force"),
-                dual_metrics.get("shinai_avg_strike_force")
-            ),
+            insert_params,
         )
         # capture the new session id so we can persist per-strike rows
         try:
             session_id = cur.lastrowid
         except Exception:
             session_id = None
+        LOG.debug("resolved session_id after insert: %s", session_id)
         # If lastrowid is not available, try to lookup by raw filename
         if not session_id:
             try:
@@ -467,6 +597,7 @@ def save_raw_json_payload(directory: Path, raw_text: str) -> Tuple[bool, Any]:
             LOG.debug("per_strikes present: %s", bool(per_strikes))
             LOG.debug("resolved session_id: %s", session_id)
             LOG.debug("dual_metrics keys (print removed)")
+            inserted_strike_count = 0
             if per_strikes and isinstance(per_strikes, list) and len(per_strikes) > 0:
                 for s in per_strikes:
                     try:
@@ -491,8 +622,10 @@ def save_raw_json_payload(directory: Path, raw_text: str) -> Tuple[bool, Any]:
                             "INSERT INTO strikes (session_id, t_ms, peak_g, rms_g, integral, half_width_ms, tip_speed_mps, created_at) VALUES (?,?,?,?,?,?,?,?)",
                             params,
                         )
+                        inserted_strike_count += 1
                     except Exception:
                         LOG.exception("Failed to insert strike row for session %s, strike=%s", session_id, s)
+                LOG.debug("inserted %s strikes for session %s", inserted_strike_count, session_id)
         except Exception:
             LOG.exception("Error while persisting per-strike metrics for %s", fname)
 

@@ -2,58 +2,163 @@
 <html>
 
 <head>
-    <meta charset="utf-8" />
+    <meta charset="utf-8">
     <title>Session {{ session.id }} - KendoPQ</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 
 <body>
     <header>
-        <h1>Session {{ session.id }}</h1>
+        <h1>Session {{ session.display_id if session.display_id is not none else session.id }}</h1>
         <p>Recorded: {{ session.created_at_human }}</p>
     </header>
 
+    {% if session.friendly_summary %}
+    <section style="max-width:900px;margin:12px 0;padding:12px;border:1px solid #e0e0e0;border-radius:8px;background:#fff;">
+        <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
+            <div style="flex:1;min-width:0;">
+                <strong>Summary:</strong>
+                <div style="margin-top:6px">{{ session.friendly_summary.recommendation }}</div>
+            </div>
+            <div style="display:flex;gap:12px;align-items:center;flex-shrink:0;min-width:220px;justify-content:flex-end">
+                <div style="text-align:center;">
+                    <div style="font-size:0.8em;color:#666">Effort</div>
+                    <div style="margin-top:6px;"><span style="background:{{ session.friendly_summary.effort_color }};color:white;padding:8px 12px;border-radius:8px;display:inline-block">{{ session.friendly_summary.effort_category }}</span></div>
+                </div>
+                <div style="text-align:center;">
+                    <div style="font-size:0.8em;color:#666">Control</div>
+                    <div style="margin-top:6px;"><span style="background:{{ session.friendly_summary.control_color }};color:{{ '#000' if session.friendly_summary.control_color == '#FFEB3B' else 'white' }};padding:8px 12px;border-radius:8px;display:inline-block">{{ session.friendly_summary.control_category }}</span></div>
+                </div>
+                <div style="text-align:center;">
+                    <div style="font-size:0.8em;color:#666">Heart</div>
+                    <div style="margin-top:6px;"><span style="background:{{ session.friendly_summary.heart_color }};color:white;padding:8px 12px;border-radius:8px;display:inline-block">{{ session.friendly_summary.heart_category }}</span></div>
+                </div>
+            </div>
+        </div>
+    </section>
+    {% endif %}
+
+    <!-- Experimental interpretations block -->
+    <section style="max-width:900px;margin:12px 0;padding:12px;border:1px dashed #bdbdbd;border-radius:8px;background:#fcfcfc">
+        <div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap">
+            <div style="flex:1;min-width:260px">
+                <strong>Experimental Interpretation</strong>
+                <div style="font-size:0.9em;color:#666;margin-top:4px">These are experimental and may be imprecise.</div>
+                <ul style="margin:8px 0 0 18px;padding:0">
+                    <li><strong>Theoretical energy cost:</strong> {{ '%.4f'|format(session.max_kinetic_energy_cal) if session.max_kinetic_energy_cal is not none else 'N/A' }} cal {% if session.max_kinetic_energy_cal is not none %}{% if session.max_kinetic_energy_cal > 0.03 %}<span style="color:#4CAF50">(Strong strike)</span>{% elif session.max_kinetic_energy_cal > 0.015 %}<span style="color:#FF9800">(Moderate strike)</span>{% else %}<span style="color:#666">(Light strike)</span>{% endif %}{% endif %}</li>
+                    <li>
+                        <strong>Form:</strong> Straightness {{ '%.2f'|format(session.straightness_score) if session.straightness_score is not none else 'N/A' }}{% if session.straightness_score is not none %}{% if session.straightness_score > 0.8 %} <span style="color:#4CAF50">[Excellent]</span>{% elif session.straightness_score > 0.6 %} <span style="color:#FF9800">[Good]</span>{% else %} <span style="color:#666">[Needs work]</span>{% endif %}{% endif %}, Consistency {{ '%.2f'|format(session.consistency_score) if session.consistency_score is not none else 'N/A' }}{% if session.consistency_score is not none %}{% if session.consistency_score > 0.8 %} <span style="color:#4CAF50">[Excellent]</span>{% elif session.consistency_score > 0.6 %} <span style="color:#FF9800">[Good]</span>{% else %} <span style="color:#666">[Needs work]</span>{% endif %}{% endif %}.
+                        <br><small style="color:#666;margin-left:20px">
+                            {% if session.straightness_score is not none and session.consistency_score is not none %}
+                                {% if session.straightness_score > 0.8 and session.consistency_score > 0.8 %}
+                                    Your strikes follow a straight path with minimal deviation, and you're repeating the same motion reliably. Keep it up!
+                                {% elif session.straightness_score > 0.8 %}
+                                    Your strikes are very straight, but there's variation between swings. Focus on muscle memory to make each strike feel identical.
+                                {% elif session.consistency_score > 0.8 %}
+                                    You're repeating your motion well, but the path could be straighter. Check your shoulder alignment and follow-through.
+                                {% elif session.straightness_score > 0.6 and session.consistency_score > 0.6 %}
+                                    Decent form overall. Work on keeping the shinai tip on a vertical plane and building consistent muscle memory.
+                                {% elif session.straightness_score > 0.6 %}
+                                    Your strikes are fairly straight but inconsistent. Practice the same motion slowly until it becomes automatic.
+                                {% elif session.consistency_score > 0.6 %}
+                                    You're consistent but strikes waver off-line. Focus on centered posture and keeping elbows closer during the swing.
+                                {% else %}
+                                    Focus on basics: centered posture, shoulders relaxed, straight downward path. Practice slow controlled strikes to build proper form.
+                                {% endif %}
+                            {% endif %}
+                        </small>
+                    </li>
+                    <li><strong>Shinai impact:</strong> Peak {{ '%.2f'|format(session.shinai_max_strike_force) if session.shinai_max_strike_force is not none else 'N/A' }} G, Avg {{ '%.2f'|format(session.shinai_avg_strike_force) if session.shinai_avg_strike_force is not none else 'N/A' }} G {% if session.shinai_avg_strike_force is not none %}{% if session.shinai_avg_strike_force > 6 %}<span style="color:#4CAF50">(High impact)</span>{% elif session.shinai_avg_strike_force > 3 %}<span style="color:#FF9800">(Medium impact)</span>{% else %}<span style="color:#666">(Light impact)</span>{% endif %}{% endif %}(measured {{ session.shinai_strike_count or 0 }} actual strikes).</li>
+                    <li><strong>Pace:</strong> Strike rate {{ '%.2f'|format(session.strike_rate_per_min) if session.strike_rate_per_min is not none else 'N/A' }} / min {% if session.strike_rate_per_min is not none %}{% if session.strike_rate_per_min > 80 %}<span style="color:#FF9800">(Fast pace)</span>{% elif session.strike_rate_per_min > 40 %}<span style="color:#4CAF50">(Moderate pace)</span>{% else %}<span style="color:#666">(Slow pace)</span>{% endif %}{% endif %}, avg interval {{ '%.0f'|format(session.avg_inter_strike_ms) if session.avg_inter_strike_ms is not none else 'N/A' }} ms.</li>
+                </ul>
+            </div>
+        </div>
+    </section>
+
     <main>
-        <ul>
-            <li><strong>Raw file:</strong> {{ session.raw_filename or 'N/A' }}</li>
-            <li><strong>IMU CSV:</strong> {{ session.imu_csv or 'N/A' }}</li>
-            <li><strong>Heart CSV:</strong> {{ session.heart_csv or 'N/A' }}</li>
-
-            <li><strong>Duration (s):</strong> {{ session.duration or 'N/A' }}</li>
-            <li><strong>IMU Hz (measured):</strong> {{ session.imu_hz_measured or 'N/A' }}</li>
-            <li><strong>Heart Mean (bpm):</strong> {{ session.heart_mean or 'N/A' }}</li>
-            <li><strong>Heart Max (bpm):</strong> {{ session.heart_max or 'N/A' }}</li>
-
-            <li><strong>Strikes:</strong> {{ session.strike_count or 0 }}</li>
-            <li><strong>Max Strike Force (G):</strong> {{ "%.2f"|format(session.max_strike_force) if
-                session.max_strike_force else 'N/A' }}</li>
-            <li><strong>Avg Strike Force (G):</strong> {{ "%.2f"|format(session.avg_strike_force) if
-                session.avg_strike_force else 'N/A' }}</li>
-            <li><strong>Avg Intensity (G):</strong> {{ "%.2f"|format(session.avg_intensity) if session.avg_intensity
-                else 'N/A' }}</li>
-            <li><strong>Max Intensity (G):</strong> {{ "%.2f"|format(session.max_intensity) if session.max_intensity
-                else 'N/A' }}</li>
-        </ul>
+        <table style="width:100%;max-width:900px;border-collapse:collapse;margin:12px 0">
+            <thead>
+                <tr style="background:#f5f5f5">
+                    <th style="text-align:left;padding:8px;border:1px solid #ddd">Metric</th>
+                    <th style="text-align:left;padding:8px;border:1px solid #ddd">Value</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <td style="padding:8px;border:1px solid #ddd">Raw file</td>
+                    <td style="padding:8px;border:1px solid #ddd">
+                        {% if session.raw_filename %}
+                        <a href="{{ url_for('download_raw', filename=session.raw_filename) }}" target="_blank">{{ session.raw_filename }}</a>
+                        {% else %}N/A{% endif %}
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding:8px;border:1px solid #ddd">IMU CSV</td>
+                    <td style="padding:8px;border:1px solid #ddd">
+                        {% if session.imu_csv %}
+                        <a href="{{ url_for('download_processed', filename=session.imu_csv) }}" target="_blank">{{ session.imu_csv }}</a>
+                        {% else %}N/A{% endif %}
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding:8px;border:1px solid #ddd">Heart CSV</td>
+                    <td style="padding:8px;border:1px solid #ddd">
+                        {% if session.heart_csv %}
+                        <a href="{{ url_for('download_processed', filename=session.heart_csv) }}" target="_blank">{{ session.heart_csv }}</a>
+                        {% else %}N/A{% endif %}
+                    </td>
+                </tr>
+                <tr>
+                    <td style="padding:8px;border:1px solid #ddd">Duration (s)</td>
+                    <td style="padding:8px;border:1px solid #ddd">{{ session.duration or 'N/A' }}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px;border:1px solid #ddd">IMU Hz (measured)</td>
+                    <td style="padding:8px;border:1px solid #ddd">{{ session.imu_hz_measured or 'N/A' }}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px;border:1px solid #ddd">Heart Mean (bpm)</td>
+                    <td style="padding:8px;border:1px solid #ddd">{{ session.heart_mean or 'N/A' }}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px;border:1px solid #ddd">Heart Max (bpm)</td>
+                    <td style="padding:8px;border:1px solid #ddd">{{ session.heart_max or 'N/A' }}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px;border:1px solid #ddd">Strikes</td>
+                    <td style="padding:8px;border:1px solid #ddd">{{ session.strike_count or 0 }}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px;border:1px solid #ddd">Max Strike Force (G)</td>
+                    <td style="padding:8px;border:1px solid #ddd">{{ "%.2f"|format(session.max_strike_force) if session.max_strike_force else 'N/A' }}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px;border:1px solid #ddd">Avg Strike Force (G)</td>
+                    <td style="padding:8px;border:1px solid #ddd">{{ "%.2f"|format(session.avg_strike_force) if session.avg_strike_force else 'N/A' }}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px;border:1px solid #ddd">Avg Intensity (G)</td>
+                    <td style="padding:8px;border:1px solid #ddd">{{ "%.2f"|format(session.avg_intensity) if session.avg_intensity else 'N/A' }}</td>
+                </tr>
+                <tr>
+                    <td style="padding:8px;border:1px solid #ddd">Max Intensity (G)</td>
+                    <td style="padding:8px;border:1px solid #ddd">{{ "%.2f"|format(session.max_intensity) if session.max_intensity else 'N/A' }}</td>
+                </tr>
+            </tbody>
+        </table>
 
         <p><a href="{{ url_for('index') }}">Back to sessions</a></p>
     </main>
-    <hr />
+
+    <hr>
+
+    <!-- Metrics explainer removed per request -->
+
     <section>
-        <h2>Shinai Time Series & Strikes</h2>
+        <h2>Shinai Time Series</h2>
         <div style="max-width:900px">
             <canvas id="shinaiChart" width="900" height="240"></canvas>
         </div>
-        <div style="max-width:600px;margin-top:16px">
-            <canvas id="peaksChart" width="600" height="160"></canvas>
-        </div>
-        <h3>Strikes</h3>
-        <p><button id="downloadCsv">Download strikes CSV</button></p>
-        <table id="strikesTable" border="1" style="border-collapse:collapse">
-            <thead>
-                <tr><th>#</th><th>t_ms</th><th>peak_g</th><th>rms_g</th><th>integral</th><th>half_width_ms</th></tr>
-            </thead>
-            <tbody></tbody>
-        </table>
     </section>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
@@ -61,10 +166,7 @@
     (function(){
         const sessionId = {{ session.id }};
         const metricsUrl = `/api/session/${sessionId}/metrics`;
-        const strikesUrl = `/api/session/${sessionId}/strikes`;
-
         let shinaiSeries = [];
-        let strikes = [];
 
         function fetchMetrics(){
             return fetch(metricsUrl).then(r=>r.json()).then(j=>{
@@ -74,33 +176,11 @@
             }).catch(()=>null);
         }
 
-        function fetchStrikes(){
-            return fetch(strikesUrl).then(r=>r.json()).then(j=>{
-                if(j.status !== 'success') return [];
-                strikes = j.strikes || [];
-                return strikes;
-            }).catch(()=>[]);
-        }
-
         function renderCharts(){
-            // Prepare time-series
             if(shinaiSeries && shinaiSeries.length>0){
                 const t0 = shinaiSeries[0].t || 0;
                 const labels = shinaiSeries.map(s=>((s.t - t0)/1000).toFixed(3));
                 const mags = shinaiSeries.map(s=>s.mag || 0);
-
-                // strike markers: find nearest mag at strike t
-                const strikePoints = [];
-                strikes.forEach((st,i)=>{
-                    if(!st.t_ms) return;
-                    // find closest index
-                    let closest = 0; let bestd = Infinity;
-                    for(let k=0;k<shinaiSeries.length;k++){
-                        const d = Math.abs(shinaiSeries[k].t - st.t_ms);
-                        if(d < bestd){ bestd = d; closest = k; }
-                    }
-                    strikePoints.push({x: labels[closest], y: mags[closest] || 0});
-                });
 
                 const ctx = document.getElementById('shinaiChart').getContext('2d');
                 new Chart(ctx, {
@@ -108,12 +188,26 @@
                     data: {
                         labels: labels,
                         datasets: [
-                            { label: 'Accel magnitude (G)', data: mags, borderColor: 'blue', fill:false, pointRadius:0 },
-                            { label: 'Strikes', data: strikePoints.map(p=>p.y), borderColor:'red', backgroundColor:'red', type:'scatter', showLine:false, pointRadius:6 }
+                            { label: 'Accel magnitude (G)', data: mags, borderColor: 'blue', fill:false, pointRadius:0 }
                         ]
                     },
                     options: {
                         responsive: true,
+                        interaction: { mode: 'nearest', intersect: true },
+                        plugins: {
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context){
+                                        try{
+                                            const val = context.parsed && context.parsed.y !== undefined ? context.parsed.y : context.raw;
+                                            return `${context.dataset.label}: ${val} G`;
+                                        }catch(e){
+                                            return '';
+                                        }
+                                    }
+                                }
+                            }
+                        },
                         scales: {
                             x: { display:true, title:{display:true, text:'seconds'} },
                             y: { display:true, title:{display:true, text:'G'} }
@@ -121,49 +215,9 @@
                     }
                 });
             }
-
-            // Peaks chart (per-strike bar)
-            if(strikes && strikes.length>0){
-                const labels = strikes.map((s,i)=>`#${i+1}`);
-                const peaks = strikes.map(s=>s.peak_g || 0);
-                const ctx2 = document.getElementById('peaksChart').getContext('2d');
-                new Chart(ctx2, {
-                    type: 'bar',
-                    data: { labels: labels, datasets: [{ label:'Peak G', data: peaks, backgroundColor:'orange' }] },
-                    options: { responsive:true, scales:{ y:{ beginAtZero:true } } }
-                });
-            }
         }
-
-        function renderTable(){
-            const tbody = document.querySelector('#strikesTable tbody');
-            tbody.innerHTML = '';
-            strikes.forEach((s,i)=>{
-                const tr = document.createElement('tr');
-                tr.innerHTML = `<td>${i+1}</td><td>${s.t_ms||''}</td><td>${(s.peak_g||'').toFixed? (s.peak_g||'') : (s.peak_g||'')}</td><td>${s.rms_g||''}</td><td>${s.integral||''}</td><td>${s.half_width_ms||''}</td>`;
-                tbody.appendChild(tr);
-            });
-        }
-
-        function setupDownload(){
-            const btn = document.getElementById('downloadCsv');
-            btn.addEventListener('click',()=>{
-                if(!strikes || strikes.length===0) return alert('No strikes to download');
-                let csv = 't_ms,peak_g,rms_g,integral,half_width_ms,tip_speed_mps\n';
-                strikes.forEach(s=>{
-                    csv += `${s.t_ms||''},${s.peak_g||''},${s.rms_g||''},${s.integral||''},${s.half_width_ms||''},${s.tip_speed_mps||''}\n`;
-                });
-                const blob = new Blob([csv], {type:'text/csv'});
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url; a.download = `session_${sessionId}_strikes.csv`;
-                document.body.appendChild(a); a.click(); a.remove();
-                URL.revokeObjectURL(url);
-            });
-        }
-
-        Promise.all([fetchMetrics(), fetchStrikes()]).then(()=>{
-            renderCharts(); renderTable(); setupDownload();
+        fetchMetrics().then(()=>{
+            renderCharts();
         });
     })();
     </script>
