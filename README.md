@@ -5,23 +5,29 @@ Raspberry Pi server for analyzing Kendo training sessions using dual-device IMU 
 ## Features
 
 ### Single Device Analysis
-- **Heart Rate Zones**: Automatically categorizes time spent in Resting, Fat Burn, Cardio, and Peak zones
-- **Movement Intensity**: Calculates average and maximum acceleration intensity
-- **Strike Detection**: Identifies sword strikes using peak detection on accelerometer data
-- **Strike Metrics**: Measures force (G) for each strike, including max and average force
-- Real-time console output for each session upload
+- **Heart Rate Zones**: Automatically categorizes time spent in Resting, Fat Burn, Cardio, and Peak zones.
+- **Movement Intensity**: Calculates average and maximum acceleration intensity.
+- **Strike Detection**: Identifies sword strikes using peak detection on accelerometer data.
+- **Strike Metrics**: Measures force (G) for each strike, including max and average force.
+- **Real-time Feedback**: Console output for each session upload.
 
-### Dual Device Analysis
+### Dual Device & Advanced Metrics
 Combines data from wrist watch and shinai sensor for advanced physics-based metrics:
-- **Tip Speed**: Calculates sword tip velocity using angular velocity (v = ω × r)
-- **Kinetic Energy**: Computes strike energy based on tip speed and sword weight
-- **Straightness**: Analyzes strike trajectory variance to measure how straight the strike is
-- **Consistency**: Compares consecutive strikes to measure technique consistency
+- **Tip Speed**: Calculates sword tip velocity using angular velocity (v = ω × r).
+- **Kinetic Energy**: Computes strike energy based on tip speed and sword weight (E = 0.5 × m × v²).
+- **Straightness**: Analyzes strike trajectory variance to measure how straight the strike is (0.0 - 1.0).
+- **Consistency**: Compares consecutive strikes to measure technique consistency (0.0 - 1.0).
+
+### Beginner-Friendly Interpretations
+- **Effort**: Categorized as Low, Moderate, or High based on wrist movement intensity.
+- **Control**: A composite score of Straightness and Consistency, categorized as "Needs Work", "Average", or "Good".
+- **Heart**: Simple "Calm", "Moderate", or "Elevated" status based on average BPM.
+- **Actionable Guidance**: Provides specific training advice based on the combination of Effort and Control scores.
 
 ### Web Interface
-- Dashboard showing all sessions with device type badges (Wear/Shinai)
-- Individual session details with full metrics
-- Dual Sensor Analysis page for selecting session pairs and viewing physics results
+- **Dashboard**: Lists all sessions with "Wrist Movement" and "Control" badges for quick assessment.
+- **Session Details**: Full breakdown of metrics, including experimental physics data and interpretive guidance.
+- **Dual Sensor Analysis**: Page for selecting session pairs and viewing physics results.
 - Access at `http://<raspberry-pi-ip>:5000/`
 
 ## Setup
@@ -45,6 +51,11 @@ python sensor_server.py
 # Server will run on http://0.0.0.0:5000
 ```
 
+Alternatively, you can use the Makefile:
+```bash
+make run
+```
+
 ## API Endpoints
 
 ### POST /end
@@ -65,17 +76,6 @@ Receives session data from watch apps and performs analysis.
 }
 ```
 
-**Request Body (Shinai App):**
-```json
-{
-  "device_id": "wrist_watch_B",
-  "data_type": "imu_only",
-  "imu": [{ "t": 160, "ax": 1.8, "ay": 0.1, "az": 9.3, "gx": 0.01, "gy": 0.0, "gz": 0.0 }],
-  "duration": 60,
-  "imu_hz": 20
-}
-```
-
 ### POST /analyze_dual
 Analyzes a pair of sessions (wear + shinai) for dual-device metrics.
 
@@ -89,32 +89,31 @@ Analyzes a pair of sessions (wear + shinai) for dual-device metrics.
 }
 ```
 
+### POST /admin/backfill
+Triggers re-computation of advanced metrics (Straightness, Consistency, Impact) for all existing sessions in the database. Useful after code updates or when new metrics are added.
+
 **Response:**
 ```json
 {
   "status": "success",
-  "report": {
-    "max_tip_speed_mps": 15.2,
-    "max_kinetic_energy_joules": 127.5,
-    "straightness_score": 0.95,
-    "consistency_score": 0.82
-  }
+  "processed": [1, 2, 3],
+  "failed": []
 }
 ```
 
 ## Web Routes
 
-- `GET /` - Sessions dashboard with device badges
-- `GET /session/<id>` - Detailed session view
-- `GET /dual_analysis` - Dual sensor analysis form
-- `POST /analyze_dual_web` - Submit dual analysis and view results
+- `GET /` - Sessions dashboard with summary badges.
+- `GET /session/<id>` - Detailed session view with metrics and guidance.
+- `GET /dual_analysis` - Dual sensor analysis form.
+- `POST /analyze_dual_web` - Submit dual analysis and view results.
 
 ## Data Storage
 
 ### File Structure
-- `data/raw_data/` - Original JSON payloads from watch apps
-- `data/processed_data/` - Processed CSV files (IMU and heart rate)
-- `data/sessions.db` - SQLite database with session metadata and analysis results
+- `data/raw_data/` - Original JSON payloads from watch apps.
+- `data/processed_data/` - Processed CSV files (IMU and heart rate).
+- `data/sessions.db` - SQLite database with session metadata and analysis results.
 
 ### Database Schema
 
@@ -137,23 +136,32 @@ CREATE TABLE sessions (
     max_strike_force REAL,        -- Maximum strike force (G)
     avg_strike_force REAL,        -- Average strike force (G)
     avg_intensity REAL,           -- Average movement intensity (G)
-    max_intensity REAL            -- Maximum movement intensity (G)
+    max_intensity REAL,           -- Maximum movement intensity (G)
+    
+    -- Advanced / Dual Metrics
+    max_tip_speed_mps REAL,       -- Max tip speed (m/s)
+    max_kinetic_energy_joules REAL, -- Max kinetic energy (J)
+    straightness_score REAL,      -- Form score (0-1)
+    consistency_score REAL,       -- Form score (0-1)
+    shinai_strike_count INTEGER,  -- Strikes detected from shinai sensor
+    shinai_max_strike_force REAL, -- Max force from shinai sensor (G)
+    shinai_avg_strike_force REAL  -- Avg force from shinai sensor (G)
 );
 ```
 
 ## Analysis Algorithms
 
 ### Strike Detection
-- **Method**: Peak detection on accelerometer magnitude
-- **Threshold**: 2.0 G (configurable)
-- **Min Distance**: 200ms between strikes to prevent double-counting
-- **Output**: Strike count, max/avg force, timestamps
+- **Method**: Peak detection on accelerometer magnitude.
+- **Threshold**: 2.0 G (configurable).
+- **Min Distance**: 200ms between strikes to prevent double-counting.
+- **Output**: Strike count, max/avg force, timestamps.
 
 ### Dual Device Physics
-- **Tip Speed**: Uses wrist gyroscope and distance to calculate v = ω × r
-- **Kinetic Energy**: E = 0.5 × m × v²
-- **Straightness**: 1.0 - (variance_minor / variance_major) on acceleration axes
-- **Consistency**: Correlation between consecutive strike profiles
+- **Tip Speed**: Uses wrist gyroscope and distance to calculate v = ω × r.
+- **Kinetic Energy**: E = 0.5 × m × v².
+- **Straightness**: 1.0 - (variance_minor / variance_major) on acceleration axes.
+- **Consistency**: Correlation between consecutive strike profiles.
 
 ## Visual Demonstrations
 
@@ -185,15 +193,13 @@ Time in Zones (samples):
   - Cardio (130-150): 30
   - Peak (>150): 10
 
-[Movement & Kendo Analysis]
-Average Intensity: 1.85 G
-Max Intensity:     5.42 G
-Kendo Strikes:     12
-Max Strike Force:  5.42 G
-Avg Strike Force:  4.87 G
+[Movement & Kendo Summary]
+Wrist activity (mean): 1.85 G
+Wrist activity (max):  5.42 G
+Kendo Strikes (wrist): 12
+Avg inter-strike interval: 850 ms
+Strike rate (wrist): 70.6 strikes/min
+Strike forces: see shinai tip analysis (per-strike peak, RMS, impulse)
 
 ========================================
 ```
-
-
-

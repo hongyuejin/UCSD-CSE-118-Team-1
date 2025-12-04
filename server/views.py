@@ -1,6 +1,7 @@
 from flask import request, jsonify, render_template, send_from_directory, abort
 from .storage import make_data_dir, save_raw_json_payload
 from .analysis import interpret_session_metrics
+from .analysis import compute_and_persist_session_metrics
 import json
 import logging
 from pathlib import Path
@@ -225,49 +226,6 @@ def register_routes(app):
                 if sessions:
                     LOG.debug("Sample session keys: %s", list(sessions[0].keys()))
                 conn.close()
-                # Compute form scores on-the-fly for sessions missing them
-                try:
-                    processed_dir = _repo_data_paths()[1]
-                    for s in sessions:
-                        if s.get("straightness_score") is None or s.get("consistency_score") is None:
-                            # Try to compute from matched shinai CSV; fallback to imu_csv
-                            try:
-                                matched_raw = s.get("matched_shinai")
-                                shinai_path = None
-                                if matched_raw:
-                                    try:
-                                        matched_list = json.loads(matched_raw) if isinstance(matched_raw, str) else matched_raw
-                                    except Exception:
-                                        matched_list = matched_raw
-                                    if isinstance(matched_list, list) and len(matched_list) > 0:
-                                        candidate = processed_dir / matched_list[0]
-                                        if candidate.exists():
-                                            shinai_path = candidate
-                                if shinai_path is None:
-                                    imu_rel = s.get("imu_csv")
-                                    if imu_rel:
-                                        candidate2 = processed_dir / imu_rel
-                                        if candidate2.exists():
-                                            shinai_path = candidate2
-                                if shinai_path is not None:
-                                    import csv as _csv
-                                    shinai_rows = []
-                                    with shinai_path.open("r", encoding="utf-8") as fh:
-                                        reader = _csv.reader(fh)
-                                        _ = next(reader, None)
-                                        for row in reader:
-                                            if row:
-                                                shinai_rows.append(row)
-                                    if shinai_rows:
-                                        from .dual_analysis import calculate_straightness, calculate_consistency
-                                        if s.get("straightness_score") is None:
-                                            s["straightness_score"] = float(calculate_straightness([], shinai_rows))
-                                        if s.get("consistency_score") is None:
-                                            s["consistency_score"] = float(calculate_consistency([], shinai_rows))
-                            except Exception:
-                                pass
-                except Exception:
-                    LOG.debug("Failed to compute form scores for index")
                 # Attach friendly summary for each session for beginner UI
                 try:
                     from .analysis import interpret_session_metrics as _interp
@@ -278,10 +236,6 @@ def register_routes(app):
                             except Exception:
                                 pass
                             friendly = _interp(s)
-                            # merge a few summary fields for template use
-                            # Effort is not shown on index; keep values unused
-                            # s["effort_category"] = friendly.get("effort_category")
-                            # s["effort_color"] = friendly.get("effort_color")
                             s["control_category"] = friendly.get("control_category")
                             s["control_color"] = friendly.get("control_color")
                             s["heart_category"] = friendly.get("heart_category")
@@ -429,68 +383,7 @@ def register_routes(app):
                     session["avg_inter_strike_ms"] = (float(dur) * 1000.0) / float(count)
             except Exception:
                 LOG.debug("Failed to derive pace metrics for session %s", session_id)
-            # Fallback: derive experimental form/impact from matched shinai CSV if dual metrics are missing
-            try:
-                needs_form = session.get("straightness_score") is None or session.get("consistency_score") is None
-                needs_impact = session.get("shinai_max_strike_force") is None or session.get("shinai_avg_strike_force") is None or session.get("shinai_strike_count") is None
-                matched_raw = session.get("matched_shinai")
-                processed_dir = _repo_data_paths()[1]
-                shinai_path = None
-                if (needs_form or needs_impact) and matched_raw:
-                    try:
-                        matched_list = json.loads(matched_raw) if isinstance(matched_raw, str) else matched_raw
-                    except Exception:
-                        matched_list = matched_raw
-                    if isinstance(matched_list, list) and len(matched_list) > 0:
-                        rel = matched_list[0]
-                        p = processed_dir / rel
-                        if p.exists():
-                            shinai_path = p
-                if shinai_path:
-                    import csv as _csv
-                    shinai_rows = []
-                    with shinai_path.open("r", encoding="utf-8") as fh:
-                        r = _csv.reader(fh)
-                        _ = next(r, None)
-                        for rowr in r:
-                            if not rowr:
-                                continue
-                            try:
-                                t = float(rowr[0])
-                            except Exception:
-                                continue
-                            try:
-                                ax = float(rowr[1]) if rowr[1] != '' else None
-                                ay = float(rowr[2]) if rowr[2] != '' else None
-                                az = float(rowr[3]) if rowr[3] != '' else None
-                            except Exception:
-                                ax = ay = az = None
-                            if ax is None or ay is None or az is None:
-                                continue
-                            shinai_rows.append([t, ax, ay, az])
-                    if shinai_rows:
-                        # Compute straightness (experimental proxy)
-                        if needs_form:
-                            try:
-                                from .dual_analysis import calculate_straightness, calculate_consistency
-                                session["straightness_score"] = float(calculate_straightness(shinai_rows))
-                                # Use shinai rows for consistency proxy (self-consistency across strikes)
-                                session["consistency_score"] = float(calculate_consistency([], shinai_rows))
-                            except Exception:
-                                LOG.debug("Failed to derive form metrics for session %s", session_id)
-                        # Compute simple impact metrics from shinai accel
-                        if needs_impact:
-                            try:
-                                from .dual_analysis import calculate_shinai_strike_metrics
-                                impact = calculate_shinai_strike_metrics(shinai_rows)
-                                session["shinai_strike_count"] = impact.get("shinai_strike_count")
-                                # Gravity compensation already applied in calculate_shinai_strike_metrics
-                                session["shinai_max_strike_force"] = impact.get("shinai_max_strike_force")
-                                session["shinai_avg_strike_force"] = impact.get("shinai_avg_strike_force")
-                            except Exception:
-                                LOG.debug("Failed to derive impact metrics for session %s", session_id)
-            except Exception:
-                LOG.debug("Experimental shinai fallback failed for session %s", session_id)
+            # Centralized architecture: avoid on-demand recompute in view
             # Calculate tip speed and energy from wrist IMU if missing
             try:
                 tip_speed = session.get("max_tip_speed_mps")
@@ -499,6 +392,7 @@ def register_routes(app):
                     # Load wrist IMU to calculate from gyro
                     imu_csv = session.get("imu_csv")
                     if imu_csv:
+                        processed_dir = _repo_data_paths()[1]
                         imu_path = processed_dir / imu_csv
                         if imu_path.exists():
                             import csv as _csv
@@ -539,24 +433,6 @@ def register_routes(app):
                         session["max_kinetic_energy_cal"] = float(energy_j) * 0.000239006
             except Exception:
                 pass
-            # Log experimental fields existence to help diagnose N/A values
-            try:
-                LOG.debug(
-                    "Experimental fields for session %s: tip_speed=%r, energy=%r, straightness=%r, consistency=%r, shinai_peak=%r, shinai_avg=%r, shinai_count=%r, rate=%r, avg_ms=%r",
-                    session_id,
-                    session.get("max_tip_speed_mps"),
-                    session.get("max_kinetic_energy_joules"),
-                    session.get("straightness_score"),
-                    session.get("consistency_score"),
-                    session.get("shinai_max_strike_force"),
-                    session.get("shinai_avg_strike_force"),
-                    session.get("shinai_strike_count"),
-                    session.get("strike_rate_per_min"),
-                    session.get("avg_inter_strike_ms"),
-                )
-            except Exception:
-                pass
-            LOG.debug("Rendering session_detail for %s with keys: %s", session_id, list(session.keys()))
             return render_template("session.html", session=session)
         except Exception as exc:
             LOG.exception("Failed to load session %s: %s", session_id, exc)
@@ -649,9 +525,6 @@ def register_routes(app):
             except Exception:
                 LOG.exception("Failed to compute friendly summary for api metrics %s", session_id)
                 friendly = None
-            if shinai_series is not None:
-                LOG.debug("api_session_metrics: shinai_series length=%d for session %s", len(shinai_series), session_id)
-            LOG.debug("api_session_metrics: friendly_summary=%s for session %s", friendly, session_id)
             resp = {"status": "success", "session": sess, "shinai_series": shinai_series, "friendly_summary": friendly}
             return jsonify(resp), 200
         except Exception as exc:
@@ -663,6 +536,51 @@ def register_routes(app):
     def api_session_strikes(session_id: int):
         # Deprecated per user request: return empty strikes always
         return jsonify({"status": "success", "strikes": []}), 200
+
+
+    @app.route("/admin/backfill", methods=["POST"])
+    def admin_backfill():
+        db_path, _, _ = _repo_data_paths()
+        if not db_path.exists():
+            return jsonify({"status": "error", "message": "DB not found"}), 404
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            # Select wear sessions; backfill where key metrics are missing
+            cur.execute(
+                "SELECT id, straightness_score, consistency_score, shinai_strike_count, shinai_max_strike_force, shinai_avg_strike_force, max_tip_speed_mps, max_kinetic_energy_joules FROM sessions WHERE device_type='wear' ORDER BY id DESC"
+            )
+            rows = cur.fetchall()
+            conn.close()
+
+            processed = []
+            failed = []
+            for r in rows:
+                sess = dict(r)
+                sid = sess.get("id")
+                missing = (
+                    sess.get("straightness_score") is None or
+                    sess.get("consistency_score") is None or
+                    sess.get("shinai_strike_count") is None or
+                    sess.get("shinai_max_strike_force") is None or
+                    sess.get("shinai_avg_strike_force") is None or
+                    sess.get("max_tip_speed_mps") is None or
+                    sess.get("max_kinetic_energy_joules") is None
+                )
+                if not missing:
+                    continue
+                try:
+                    compute_and_persist_session_metrics(sid)
+                    processed.append(sid)
+                except Exception as exc:
+                    LOG.exception("Backfill failed for session %s: %s", sid, exc)
+                    failed.append({"id": sid, "error": str(exc)})
+
+            return jsonify({"status": "success", "processed": processed, "failed": failed}), 200
+        except Exception as exc:
+            LOG.exception("Admin backfill route failed: %s", exc)
+            return jsonify({"status": "error", "message": str(exc)}), 500
 
 
 

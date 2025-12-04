@@ -238,11 +238,6 @@ def analyze_session(payload):
         metrics["max_strike_force"] = kendo_stats.get("max_strike_force", 0.0)
         metrics["avg_strike_force"] = kendo_stats.get("avg_strike_force", 0.0)
 
-    try:
-        LOG.debug("analyze_session returning metrics: %s", metrics)
-    except Exception:
-        pass
-
     return metrics
 
 
@@ -507,3 +502,150 @@ def interpret_session_metrics(metrics: dict) -> dict:
         "heart_value": round(heart_mean, 0),
         "recommendation": recommendation,
     }
+
+# Centralized compute-and-persist for session metrics
+def compute_and_persist_session_metrics(session_id: int) -> bool:
+    """Compute derived metrics from CSVs for a session and persist to DB.
+
+    Returns True if metrics were computed and saved, False otherwise.
+    """
+    import sqlite3, json, math
+    from pathlib import Path
+    from .views import _repo_data_paths
+    from .dual_analysis import (
+        calculate_straightness,
+        calculate_consistency,
+        calculate_shinai_strike_metrics,
+    )
+
+    db_path, processed_dir, _ = _repo_data_paths()
+    if not db_path.exists():
+        return False
+
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        return False
+    sess = dict(row)
+
+    # Resolve CSV path: prefer matched shinai, else imu_csv
+    shinai_path = None
+    try:
+        matched_raw = sess.get("matched_shinai")
+        if matched_raw:
+            try:
+                matched_list = json.loads(matched_raw) if isinstance(matched_raw, str) else matched_raw
+            except Exception:
+                matched_list = matched_raw
+            if isinstance(matched_list, list) and len(matched_list) > 0:
+                candidate = processed_dir / matched_list[0]
+                if candidate.exists():
+                    shinai_path = candidate
+        if shinai_path is None and sess.get("imu_csv"):
+            candidate2 = processed_dir / sess.get("imu_csv")
+            if candidate2.exists():
+                shinai_path = candidate2
+    except Exception:
+        shinai_path = None
+
+    if shinai_path is None:
+        conn.close()
+        return False
+
+    # Load rows
+    import csv as _csv
+    shinai_rows = []
+    try:
+        with shinai_path.open("r", encoding="utf-8") as fh:
+            reader = _csv.reader(fh)
+            _ = next(reader, None)
+            for r in reader:
+                if r:
+                    shinai_rows.append(r)
+    except Exception:
+        conn.close()
+        return False
+
+    # Compute metrics
+    straightness = None
+    consistency = None
+    try:
+        straightness = float(calculate_straightness(shinai_rows))
+        consistency = float(calculate_consistency([], shinai_rows))
+    except Exception as e:
+        LOG.warning("Metric computation failed for session %s: %s", session_id, e)
+        pass
+
+    impact = None
+    max_g = avg_g = strike_count = None
+    try:
+        impact = calculate_shinai_strike_metrics(shinai_rows)
+        strike_count = impact.get("shinai_strike_count")
+        max_g = impact.get("shinai_max_strike_force")
+        avg_g = impact.get("shinai_avg_strike_force")
+    except Exception:
+        pass
+
+    # Pace from DB if available else estimate
+    duration = sess.get("duration") or 0
+    if duration and strike_count:
+        rate_per_min = (strike_count / duration) * 60.0
+        avg_interval_ms = (duration / max(strike_count, 1)) * 1000.0
+    else:
+        rate_per_min = None
+        avg_interval_ms = None
+
+    # Energy from wrist gyro if available
+    max_tip_speed = None
+    energy_cal = None
+    try:
+        imu_rel = sess.get("imu_csv")
+        if imu_rel:
+            imu_path = processed_dir / imu_rel
+            if imu_path.exists():
+                max_gyro_mag = 0.0
+                with imu_path.open("r", encoding="utf-8") as fh:
+                    reader = _csv.reader(fh)
+                    _ = next(reader, None)
+                    for rowr in reader:
+                        if not rowr or len(rowr) < 7:
+                            continue
+                        try:
+                            gx = float(rowr[4]) if rowr[4] != '' else 0.0
+                            gy = float(rowr[5]) if rowr[5] != '' else 0.0
+                            gz = float(rowr[6]) if rowr[6] != '' else 0.0
+                            gyro_mag = (gx*gx + gy*gy + gz*gz) ** 0.5
+                            if gyro_mag > max_gyro_mag:
+                                max_gyro_mag = gyro_mag
+                        except Exception:
+                            continue
+                if max_gyro_mag > 0:
+                    distance_m = 1.2
+                    mass_kg = 0.57
+                    max_tip_speed = max_gyro_mag * distance_m
+                    energy_j = 0.5 * mass_kg * (max_tip_speed ** 2)
+                    energy_cal = energy_j * 0.000239006
+    except Exception:
+        pass
+
+    # Persist
+    try:
+        cur.execute(
+            "UPDATE sessions SET straightness_score = ?, consistency_score = ?, shinai_strike_count = ?, shinai_max_strike_force = ?, shinai_avg_strike_force = ?, max_tip_speed_mps = ?, max_kinetic_energy_joules = ? WHERE id = ?",
+            (
+                straightness, consistency, strike_count, max_g, avg_g,
+                max_tip_speed, energy_j,
+                session_id,
+            ),
+        )
+        conn.commit()
+    except Exception as e:
+        LOG.error("Persist failed for session %s: %s", session_id, e)
+        conn.close()
+        return False
+    conn.close()
+    return True
