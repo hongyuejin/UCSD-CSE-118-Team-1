@@ -4,19 +4,17 @@ Raspberry Pi server for analyzing Kendo training sessions using dual-device IMU 
 
 ## Features
 
-### Single Device Analysis
-- **Heart Rate Zones**: Automatically categorizes time spent in Resting, Fat Burn, Cardio, and Peak zones.
-- **Movement Intensity**: Calculates average and maximum acceleration intensity.
+### Single Device Analysis (Wrist Watch)
+- **Heart Rate**: Tracks average and maximum heart rate (BPM) to gauge exertion.
+- **Movement Intensity**: Calculates average and maximum acceleration intensity (G).
 - **Strike Detection**: Identifies sword strikes using peak detection on accelerometer data.
-- **Strike Metrics**: Measures force (G) for each strike, including max and average force.
-- **Real-time Feedback**: Console output for each session upload.
+- **Calories**: Estimates theoretical energy cost (cal) based on wrist angular velocity.
 
-### Dual Device & Advanced Metrics
-Combines data from wrist watch and shinai sensor for advanced physics-based metrics:
-- **Tip Speed**: Calculates sword tip velocity using angular velocity (v = ω × r).
-- **Kinetic Energy**: Computes strike energy based on tip speed and sword weight (E = 0.5 × m × v²).
+### Dual Device Analysis (Wrist + Shinai Sensor)
+When a Shinai sensor is paired, the system provides advanced form and impact metrics:
 - **Straightness**: Analyzes strike trajectory variance to measure how straight the strike is (0.0 - 1.0).
 - **Consistency**: Compares consecutive strikes to measure technique consistency (0.0 - 1.0).
+- **True Impact**: Measures actual strike force (G) and impact details at the sword tip.
 
 ### Beginner-Friendly Interpretations
 - **Effort**: Categorized as Low, Moderate, or High based on wrist movement intensity.
@@ -27,7 +25,7 @@ Combines data from wrist watch and shinai sensor for advanced physics-based metr
 ### Web Interface
 - **Dashboard**: Lists all sessions with "Wrist Movement" and "Control" badges for quick assessment.
 - **Session Details**: Full breakdown of metrics, including experimental physics data and interpretive guidance.
-- **Dual Sensor Analysis**: Page for selecting session pairs and viewing physics results.
+- **Dual Sensor Analysis**: Page for manually selecting session pairs to run dual analysis (useful for debugging or manual matching).
 - Access at `http://<raspberry-pi-ip>:5000/`
 
 ## Setup
@@ -149,7 +147,7 @@ CREATE TABLE sessions (
 );
 ```
 
-## Analysis Algorithms
+### Analysis Algorithms
 
 ### Strike Detection
 - **Method**: Peak detection on accelerometer magnitude.
@@ -157,9 +155,15 @@ CREATE TABLE sessions (
 - **Min Distance**: 200ms between strikes to prevent double-counting.
 - **Output**: Strike count, max/avg force, timestamps.
 
-### Dual Device Physics
-- **Tip Speed**: Uses wrist gyroscope and distance to calculate v = ω × r.
-- **Kinetic Energy**: E = 0.5 × m × v².
+### 2. Physics Estimates (Dual Device Only)
+Uses the gyroscope data from the wrist sensor to estimate the tip speed of the shinai.
+
+- **Tip Speed**: $v = \omega \cdot r$
+  - $\omega$: Angular velocity (rad/s) from Gyroscope
+  - $r$: Length of shinai (1.20m)
+- **Kinetic Energy**: $E = 0.5 \cdot m \cdot v^2$
+  - $m$: Mass of shinai (0.51kg)
+  - **Calories**: Converted from Joules ($1 J = 0.000239 kcal$)
 - **Straightness**: 1.0 - (variance_minor / variance_major) on acceleration axes.
 - **Consistency**: Correlation between consecutive strike profiles.
 
