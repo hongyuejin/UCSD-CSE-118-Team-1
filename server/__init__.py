@@ -6,7 +6,8 @@ from . import views
 def _configure_logger() -> None:
     log = logging.getLogger("sensor_server")
     if not log.handlers:
-        log.setLevel(logging.INFO)
+        # Allow DEBUG logs to be visible when needed
+        log.setLevel(logging.DEBUG)
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
         log.addHandler(handler)

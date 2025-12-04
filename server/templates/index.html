@@ -3,16 +3,14 @@
 
 <head>
     <meta charset="utf-8" />
-    <title>KendoPQ — Sessions</title>
+    <title>KendoPQ - Sessions</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 
 <body>
     <header>
-        <h1>KendoPQ — Sessions</h1>
+        <h1>KendoPQ - Sessions</h1>
         <p>A simple server-side rendered list of all recorded training sessions.</p>
-        <p><a href="{{ url_for('dual_analysis_form') }}" style="color: #2196F3; text-decoration: underline;">Dual Sensor
-                Analysis</a></p>
     </header>
 
     <main>
@@ -22,34 +20,59 @@
                 <tr>
                     <th>ID</th>
                     <th>Recorded</th>
-                    <th>Device</th>
+                    <th>Preview</th>
                     <th>Duration (s)</th>
-                    <th>HR mean</th>
+                    <th>Heart Rate Intensity</th>
                     <th>Strikes</th>
                     <th>Max Force (G)</th>
-                    <th>Intensity (G)</th>
+                    <th>Wrist Movement (G)</th>
+                    <th>Control</th>
                     <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
                 {% for s in sessions %}
                 <tr>
-                    <td>{{ s.id }}</td>
+                    <td>{{ s.display_id if s.display_id is not none else loop.index }}</td>
                     <td>{{ s.created_at }}</td>
-                    <td>
-                        {% if s.device_type == 'shinai' %}
-                        <span
-                            style="background-color: #4CAF50; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.85em;">Shinai</span>
-                        {% else %}
-                        <span
-                            style="background-color: #2196F3; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.85em;">Wear</span>
-                        {% endif %}
+                    
+                    <td style="width:140px">
+                        <canvas id="sparkline-{{ s.id }}" data-series='{{ s.display_series|tojson }}' width="120" height="36" style="width:120px;height:36px"></canvas>
                     </td>
                     <td>{{ s.duration or '' }}</td>
-                    <td>{{ s.heart_mean or '' }}</td>
-                    <td>{{ s.strike_count or 0 }}</td>
-                    <td>{{ "%.2f"|format(s.max_strike_force) if s.max_strike_force else '' }}</td>
-                    <td>{{ "%.2f"|format(s.avg_intensity) if s.avg_intensity else '' }}</td>
+                    <td>
+                        {% if s.heart_category %}
+                        <span style="background-color: {{ s.heart_category == 'Elevated' and '#F44336' or (s.heart_category == 'Moderate' and '#FF9800' or (s.heart_category == 'Calm' and '#4CAF50' or '#9E9E9E')) }}; color:white; padding:2px 8px; border-radius:4px; font-size:0.85em;">
+                            {{ s.heart_category }}
+                        </span>
+                        {% else %}
+                        {{ s.heart_mean or '' }}
+                        {% endif %}
+                    </td>
+                    <td>{{ (s.strike_count if s.strike_count is not none and s.strike_count != 0 else s.shinai_strike_count) or 0 }}</td>
+                    <td>{{ "%.2f"|format(s.max_strike_force if s.max_strike_force is not none and s.max_strike_force != 0 else s.shinai_max_strike_force) if (s.max_strike_force or s.shinai_max_strike_force) else '' }}</td>
+                    <td>
+                        {% if s.avg_intensity %}
+                            {% set wm = s.avg_intensity %}
+                            {% if wm < 1.5 %}
+                                <span style="background-color:#4CAF50; color:white; padding:2px 8px; border-radius:4px; font-size:0.85em;">Low</span>
+                            {% elif wm < 3.5 %}
+                                <span style="background-color:#FF9800; color:white; padding:2px 8px; border-radius:4px; font-size:0.85em;">Moderate</span>
+                            {% else %}
+                                <span style="background-color:#F44336; color:white; padding:2px 8px; border-radius:4px; font-size:0.85em;">High</span>
+                            {% endif %}
+                        {% else %}
+                            <span style="background-color:#9E9E9E; color:white; padding:2px 8px; border-radius:4px; font-size:0.85em;">N/A</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if s.control_category %}
+                        <span style="background-color: {{ s.control_color or '#9E9E9E' }}; color:black; padding:2px 8px; border-radius:4px; font-size:0.85em;">{{ s.control_category }}</span>
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
+                    
                     <td><a href="{{ url_for('session_detail', session_id=s.id) }}">View Details</a></td>
                 </tr>
                 {% endfor %}
@@ -58,7 +81,55 @@
         {% else %}
         <p>No sessions found in the database (sessions.db).</p>
         {% endif %}
+
+        
     </main>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+    (function(){
+        // Render small sparklines for each canvas with a data-series attribute
+        function renderSparklines(){
+            const canvases = document.querySelectorAll('canvas[data-series]');
+            canvases.forEach(c=>{
+                try{
+                    const raw = c.getAttribute('data-series');
+                    if(!raw) return;
+                    const series = JSON.parse(raw);
+                    if(!series || series.length===0) return;
+                    const ctx = c.getContext('2d');
+                    // compute y min/max with padding to avoid flat-line appearance
+                    const smin = Math.min.apply(null, series);
+                    const smax = Math.max.apply(null, series);
+                    const padding = Math.max((smax - smin) * 0.1, 0.01);
+                    const yMin = smin - padding;
+                    const yMax = smax + padding;
+
+                    new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: series.map((_,i)=>i),
+                            datasets: [{ data: series, borderColor:'#2196F3', borderWidth:1, pointRadius:0, fill:false }]
+                        },
+                        options: {
+                            responsive: false,
+                            maintainAspectRatio: false,
+                            plugins: { legend: { display: false } },
+                            scales: { x: { display:false }, y: { display:false, min: yMin, max: yMax } },
+                            elements: { line: { tension: 0 } }
+                        }
+                    });
+                }catch(e){
+                    // ignore
+                }
+            });
+        }
+        if(document.readyState === 'loading'){
+            document.addEventListener('DOMContentLoaded', renderSparklines);
+        } else {
+            renderSparklines();
+        }
+    })();
+    </script>
 </body>
 
 </html>
