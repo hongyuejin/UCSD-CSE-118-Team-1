@@ -30,13 +30,20 @@
                     <div style="margin-top:6px;"><span style="background:{{ session.friendly_summary.control_color }};color:{{ '#000' if session.friendly_summary.control_color == '#FFEB3B' else 'white' }};padding:8px 12px;border-radius:8px;display:inline-block">{{ session.friendly_summary.control_category }}</span></div>
                 </div>
                 <div style="text-align:center;">
-                    <div style="font-size:0.8em;color:#666">Heart</div>
+                    <div style="font-size:0.8em;color:#666">Heart Rate Intensity</div>
                     <div style="margin-top:6px;"><span style="background:{{ session.friendly_summary.heart_color }};color:white;padding:8px 12px;border-radius:8px;display:inline-block">{{ session.friendly_summary.heart_category }}</span></div>
                 </div>
             </div>
         </div>
     </section>
     {% endif %}
+
+    <section>
+        <h2>Shinai Time Series</h2>
+        <div style="max-width:900px">
+            <canvas id="shinaiChart" width="900" height="240"></canvas>
+        </div>
+    </section>
 
     <!-- Experimental interpretations block -->
     <section style="max-width:900px;margin:12px 0;padding:12px;border:1px dashed #bdbdbd;border-radius:8px;background:#fcfcfc">
@@ -153,13 +160,6 @@
     <hr>
 
     <!-- Metrics explainer removed per request -->
-
-    <section>
-        <h2>Shinai Time Series</h2>
-        <div style="max-width:900px">
-            <canvas id="shinaiChart" width="900" height="240"></canvas>
-        </div>
-    </section>
 
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
