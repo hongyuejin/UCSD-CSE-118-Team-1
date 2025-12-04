@@ -1,0 +1,169 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Training Trends — KendoPQ</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <header>
+        <h1>Training Trends</h1>
+        <p>Track your progress over recent sessions</p>
+    </header>
+
+    <main style="max-width: 1200px;">
+        <div style="margin-bottom: 2em;">
+            <h2>Form Quality (Last 20 Sessions)</h2>
+            <canvas id="formChart" width="900" height="240"></canvas>
+        </div>
+
+        <div style="margin-bottom: 2em;">
+            <h2>Effort & Heart Rate (Last 20 Sessions)</h2>
+            <canvas id="effortChart" width="900" height="240"></canvas>
+        </div>
+
+        <div style="margin-bottom: 2em;">
+            <h2>Strike Count Trend</h2>
+            <canvas id="strikeChart" width="900" height="200"></canvas>
+        </div>
+
+        <p style="margin-top: 2em;"><a href="{{ url_for('index') }}">Back to sessions</a></p>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+    (function() {
+        const sessions = {{ sessions|tojson }};
+        const labels = sessions.map((s, i) => `S${i+1}`);
+        
+        // Form Quality: Straightness & Consistency
+        const straightness = sessions.map(s => s.straightness_score || 0);
+        const consistency = sessions.map(s => s.consistency_score || 0);
+        
+        const formCtx = document.getElementById('formChart').getContext('2d');
+        new Chart(formCtx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Straightness',
+                        data: straightness,
+                        borderColor: '#2196F3',
+                        backgroundColor: 'rgba(33, 150, 243, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 4,
+                        pointBackgroundColor: '#2196F3'
+                    },
+                    {
+                        label: 'Consistency',
+                        data: consistency,
+                        borderColor: '#4CAF50',
+                        backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 4,
+                        pointBackgroundColor: '#4CAF50'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { position: 'top' },
+                    title: { display: false }
+                },
+                scales: {
+                    y: {
+                        min: 0,
+                        max: 1,
+                        title: { display: true, text: 'Score (0-1)' }
+                    }
+                }
+            }
+        });
+
+        // Effort & Heart Rate
+        const avgIntensity = sessions.map(s => s.avg_intensity || 0);
+        const heartMean = sessions.map(s => s.heart_mean || 0);
+        
+        const effortCtx = document.getElementById('effortChart').getContext('2d');
+        new Chart(effortCtx, {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [
+                    {
+                        label: 'Avg Intensity (G)',
+                        data: avgIntensity,
+                        borderColor: '#FF9800',
+                        backgroundColor: 'rgba(255, 152, 0, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 4,
+                        pointBackgroundColor: '#FF9800',
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: 'Avg Heart Rate (bpm)',
+                        data: heartMean,
+                        borderColor: '#F44336',
+                        backgroundColor: 'rgba(244, 67, 54, 0.1)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        pointRadius: 4,
+                        pointBackgroundColor: '#F44336',
+                        yAxisID: 'y1'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { position: 'top' }
+                },
+                scales: {
+                    y: {
+                        type: 'linear',
+                        position: 'left',
+                        title: { display: true, text: 'Intensity (G)' }
+                    },
+                    y1: {
+                        type: 'linear',
+                        position: 'right',
+                        title: { display: true, text: 'Heart Rate (bpm)' },
+                        grid: { drawOnChartArea: false }
+                    }
+                }
+            }
+        });
+
+        // Strike Count
+        const strikeCount = sessions.map(s => s.strike_count || 0);
+        
+        const strikeCtx = document.getElementById('strikeChart').getContext('2d');
+        new Chart(strikeCtx, {
+            type: 'bar',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'Strike Count',
+                    data: strikeCount,
+                    backgroundColor: '#2196F3',
+                    borderColor: '#1976D2',
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: {
+                    y: { title: { display: true, text: 'Strikes' } }
+                }
+            }
+        });
+    })();
+    </script>
+</body>
+</html>
