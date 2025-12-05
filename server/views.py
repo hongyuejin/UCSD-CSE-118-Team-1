@@ -345,6 +345,34 @@ def register_routes(app):
 
         # Pass the list of sessions directly to the template
         return render_template("index.html", sessions=sessions)
+    
+    @app.route("/trends", methods=["GET"])
+    def trends():
+        """Display progress trends over time."""
+        db_path, _, _ = _repo_data_paths()
+        if not db_path.exists():
+            abort(404)
+        
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            
+            # Get last 20 wear sessions with trend data
+            cur.execute(
+                """SELECT id, created_at, straightness_score, consistency_score, 
+                   avg_intensity, heart_mean, strike_count, duration
+                   FROM sessions WHERE device_type = 'wear' 
+                   ORDER BY id DESC LIMIT 20"""
+            )
+            sessions = [dict(r) for r in cur.fetchall()]
+            sessions.reverse()  # Show oldest first (left to right)
+            
+            conn.close()
+            return render_template("trends.html", sessions=sessions)
+        except Exception as exc:
+            LOG.exception("Trends failed: %s", exc)
+            abort(500)
 
     @app.route("/session/<int:session_id>", methods=["GET"])
     def session_detail(session_id: int):
