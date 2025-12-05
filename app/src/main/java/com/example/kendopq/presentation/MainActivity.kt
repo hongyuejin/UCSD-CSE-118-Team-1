@@ -99,6 +99,7 @@ import androidx.compose.ui.platform.LocalContext
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
+import androidx.compose.runtime.mutableFloatStateOf
 
 
 // ----------------------
@@ -354,6 +355,10 @@ fun WearApp(
         var strikeCount by remember { mutableIntStateOf(0) }
         var isSwingDetected by remember { mutableStateOf(false) }
         var lastStrikeTime by remember { mutableLongStateOf(0L) }
+        
+        // New states for smoothed detection logic
+        var smoothedGyroMag by remember { mutableFloatStateOf(0f) }
+        var underThresholdStartTime by remember { mutableLongStateOf(0L) }
 
         val heartRateSamples = remember { mutableStateListOf<HeartRateSample>() }
         val rotationSamples = remember { mutableStateListOf<RotationVectorSample>() }
@@ -419,9 +424,17 @@ fun WearApp(
                     val (gx, gy, gz) = gyroState.value
 
                     // --- Strike Detection Logic ---
-                    val gyroMag = kotlin.math.sqrt(gx * gx + gy * gy + gz * gz)
-                    if (gyroMag > 4.0f) { // Threshold: ~230 deg/s
-                        if (!isSwingDetected && (now - lastStrikeTime > 400)) { // 400ms Cooldown to prevent double counts
+                    val rawGyroMag = kotlin.math.sqrt(gx * gx + gy * gy + gz * gz)
+
+                    // 1. Exponential Moving Average (EMA) for smoothing
+                    // alpha determines smoothing factor (0 < alpha <= 1). Lower is smoother.
+                    val alpha = 0.6f 
+                    smoothedGyroMag = (alpha * rawGyroMag) + ((1 - alpha) * smoothedGyroMag)
+
+                    Log.d("KendoPQ", "Strike Logic: raw=$rawGyroMag, smooth=$smoothedGyroMag, isSwing=$isSwingDetected")
+
+                    if (smoothedGyroMag > 4.0f) { // Threshold: ~230 deg/s
+                        if (!isSwingDetected && (now - lastStrikeTime > 400)) { // 400ms cooldown
                             strikeCount++
                             isSwingDetected = true
                             lastStrikeTime = now
@@ -437,8 +450,25 @@ fun WearApp(
                                 }
                             }
                         }
-                    } else if (gyroMag < 2.0f) { // Reset threshold
-                        isSwingDetected = false
+                        // If we are above threshold, reset the "under threshold" timer
+                        underThresholdStartTime = 0L
+
+                    } else if (smoothedGyroMag < 2.0f) { // Reset threshold check
+                        if (isSwingDetected) {
+                            if (underThresholdStartTime == 0L) {
+                                // Just dropped below threshold, start timing
+                                underThresholdStartTime = now
+                            } else if (now - underThresholdStartTime > 100) {
+                                // Has been below threshold for > 100ms, safe to reset
+                                isSwingDetected = false
+                                underThresholdStartTime = 0L
+                                Log.d("KendoPQ", "Strike state reset (ready for next)")
+                            }
+                        }
+                    } else {
+                        // In between thresholds (hysteresis region), reset the under-threshold timer
+                        // so we don't reset state if we bounce back up quickly
+                        underThresholdStartTime = 0L
                     }
                     // ------------------------------
 
@@ -457,6 +487,10 @@ fun WearApp(
             } else {
                 rotationSamples.clear()
                 imuSamples.clear()
+                // Reset internal state when stopped
+                smoothedGyroMag = 0f
+                isSwingDetected = false
+                underThresholdStartTime = 0L
             }
         }
 
@@ -469,6 +503,8 @@ fun WearApp(
             imuSamples.clear()
             startTimeMillis = SystemClock.elapsedRealtime()
             isRunning = true
+            smoothedGyroMag = 0f
+            underThresholdStartTime = 0L
             // (sendHttpRequestStart is defined but was not used before; keeping behavior the same)
         }
 
@@ -484,6 +520,25 @@ fun WearApp(
             rotationSamples.clear()
             imuSamples.clear()
 
+            // Calculate summary locally
+            // Filter out 0 bpm readings
+            val validHr = hrToSend.filter { it.bpm > 0 }
+            val avgHr = if (validHr.isNotEmpty()) {
+                validHr.map { it.bpm }.average()
+            } else {
+                0.0
+            }
+
+            val summary = TrainingSummary(
+                avgHeartRate = avgHr,
+                strikeCount = finalStrikeCount,
+                durationSeconds = durationSeconds
+            )
+
+            // Update UI immediately
+            lastSummary = summary
+            saveSummaryToPrefs(context, summary)
+
             scope.launch {
                 // 1) send /end with session data (existing behavior)
                 sendHttpRequestEnd(
@@ -493,17 +548,6 @@ fun WearApp(
                     duration = durationSeconds,
                     strikeCount = finalStrikeCount
                 )
-
-                // 2) wait 1 second
-                delay(1000L)
-
-                // 3) fetch /recent from the server
-                val summary = fetchRecentSummary()
-                if (summary != null) {
-                    lastSummary = summary
-                    // save to local storage so it's available next time app opens
-                    saveSummaryToPrefs(context, summary)
-                }
             }
         }
 
@@ -717,55 +761,6 @@ suspend fun sendHttpRequestEnd(
             }
         } catch (e: Exception) {
             Log.e("HTTP", "Error sending /end", e)
-        }
-    }
-}
-
-/**
- * GET /recent
- * Expected JSON example:
- * {
- *   "average_heart_rate": 85.3,
- *   "strike_count": 42,
- *   "duration": 120
- * }
- */
-suspend fun fetchRecentSummary(): TrainingSummary? {
-    return withContext(Dispatchers.IO) {
-        try {
-            val client = OkHttpClient()
-            val request = Request.Builder()
-                .url("$URL/recent")
-                .get()
-                .build()
-
-            client.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    Log.e("HTTP", "Error /recent: code=${response.code}")
-                    return@withContext null
-                }
-                val bodyStr = response.body?.string() ?: return@withContext null
-                val json = JSONObject(bodyStr)
-
-                val avgHr = json.optDouble("average_heart_rate", Double.NaN)
-                val strikes = json.optInt("strike_count", 0)
-                val duration =
-                    if (json.has("duration")) json.optInt("duration") else null
-
-                if (avgHr.isNaN()) {
-                    Log.e("HTTP", "No average_heart_rate in /recent")
-                    return@withContext null
-                }
-
-                TrainingSummary(
-                    avgHeartRate = avgHr,
-                    strikeCount = strikes,
-                    durationSeconds = duration
-                )
-            }
-        } catch (e: Exception) {
-            Log.e("HTTP", "Error fetching /recent", e)
-            null
         }
     }
 }
