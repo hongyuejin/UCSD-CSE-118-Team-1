@@ -1,6 +1,8 @@
 import math
 import logging
 import statistics
+import numpy as np
+from scipy.signal import butter, filtfilt, find_peaks
 
 LOG = logging.getLogger("sensor_server.analysis")
 
@@ -241,15 +243,20 @@ def analyze_session(payload):
     return metrics
 
 
-def detect_kendo_strikes(imu_rows, threshold=2.0, min_dist_ms=200, target_count=None):
+def detect_kendo_strikes(imu_rows, threshold=2.0, min_dist_ms=600, target_count=None):
     """
-    Detects sword strikes based on accelerometer peaks.
+    Detects sword strikes based on accelerometer peaks using robust signal processing.
+    Uses a Low-Pass Butterworth filter and scipy.signal.find_peaks.
 
     Args:
         imu_rows: List of [t, ax, ay, az, gx, gy, gz]
         threshold: Acceleration magnitude threshold (G) to count as a strike.
-        min_dist_ms: Minimum time (ms) between strikes to avoid double counting.
-        target_count: Optional strike count reference from the wearable.
+                   Default increased to 2.0G (net) or ~3.0G (raw) but we use raw here.
+                   Actually, let's stick to the user's finding: height_g=4.0 (raw).
+                   However, the caller might pass a lower threshold (default 2.0).
+                   We'll use a robust default if not specified or too low.
+        min_dist_ms: Minimum time (ms) between strikes. Default 600ms.
+        target_count: Optional strike count reference (unused in new robust algo).
 
     Returns:
         dict: {
@@ -261,8 +268,7 @@ def detect_kendo_strikes(imu_rows, threshold=2.0, min_dist_ms=200, target_count=
             "raw_detected_count": int,
         }
     """
-    net_series = _build_net_g_series(imu_rows)
-    if not net_series:
+    if not imu_rows:
         return {
             "strike_count": 0,
             "max_strike_force": 0.0,
@@ -272,125 +278,101 @@ def detect_kendo_strikes(imu_rows, threshold=2.0, min_dist_ms=200, target_count=
             "raw_detected_count": 0,
         }
 
-    strikes = _peak_detect_from_series(net_series, threshold, min_dist_ms)
-    raw_detected = len(strikes)
-    used_threshold = threshold
+    # 1. Extract Data
+    times = []
+    mags = []
+    
+    # Check if data is raw m/s^2 or G. 
+    # Based on previous code: magnitude = math.sqrt(...) / 9.80665 -> input was m/s^2.
+    # We will convert to G for consistency with the new algorithm.
+    
+    for row in imu_rows:
+        try:
+            t = float(row[0])
+            ax = float(row[1])
+            ay = float(row[2])
+            az = float(row[3])
+            
+            # Calculate raw magnitude in m/s^2 (assuming input is m/s^2)
+            # If input is already G, this check will be handled below.
+            mag = math.sqrt(ax*ax + ay*ay + az*az)
+            
+            times.append(t)
+            mags.append(mag)
+        except (ValueError, IndexError, TypeError):
+            continue
+            
+    if not times:
+        return {
+            "strike_count": 0,
+            "max_strike_force": 0.0,
+            "avg_strike_force": 0.0,
+            "strike_timestamps": [],
+            "calibrated_threshold": threshold,
+            "raw_detected_count": 0,
+        }
 
-    if target_count and target_count > 0:
-        used_threshold, strikes = _calibrate_threshold_to_target(
-            net_series,
-            min_dist_ms,
-            target_count,
-            threshold,
-            strikes,
-        )
-        LOG.debug(
-            "detect_kendo_strikes calibrated using target=%s raw=%s final=%s threshold=%.2f",
-            target_count,
-            raw_detected,
-            len(strikes),
-            used_threshold,
-        )
-
-    count = len(strikes)
-    max_force = max([s[1] for s in strikes]) if strikes else 0.0
-    avg_force = sum([s[1] for s in strikes]) / count if strikes else 0.0
-
+    times_arr = np.array(times)
+    mags_arr = np.array(mags)
+    
+    # Auto-detect units: if mean is ~9.8, it's m/s^2. If ~1.0, it's G.
+    if np.mean(mags_arr) > 8.0:
+        mags_arr = mags_arr / 9.80665
+        
+    # 2. Estimate Sampling Rate
+    duration_sec = (times_arr[-1] - times_arr[0]) / 1000.0
+    if duration_sec <= 0:
+        fs = 50.0 # Fallback
+    else:
+        fs = len(times_arr) / duration_sec
+        
+    # 3. Preprocessing (Butterworth Filter)
+    cutoff_hz = 5.0
+    nyquist = 0.5 * fs
+    if cutoff_hz >= nyquist:
+        cutoff_hz = nyquist * 0.9
+        
+    normal_cutoff = cutoff_hz / nyquist
+    b, a = butter(N=4, Wn=normal_cutoff, btype='low', analog=False)
+    smoothed_g = filtfilt(b, a, mags_arr)
+    
+    # 4. Peak Detection
+    # Use robust defaults if provided threshold is the old default (2.0)
+    # The user found 4.0G works well for raw data.
+    # If the caller passed a specific threshold, we respect it, but ensure it's reasonable.
+    # Note: The old code used "net G" (mag - 1.0). The new code uses "raw G".
+    # So a threshold of 2.0 in old code (3.0 raw) is comparable to 3.0 here.
+    # We'll use 3.5 as a safe default for raw G if the passed threshold is low.
+    
+    detect_threshold = threshold
+    if threshold < 3.0:
+        detect_threshold = 3.5
+        
+    distance_samples = int((min_dist_ms / 1000.0) * fs)
+    
+    peaks, _ = find_peaks(
+        smoothed_g,
+        height=detect_threshold,
+        distance=distance_samples,
+        prominence=2.0
+    )
+    
+    # 5. Compile Results
+    strike_timestamps = times_arr[peaks].tolist()
+    strike_forces = smoothed_g[peaks].tolist() # Use smoothed force for consistency
+    
+    count = len(peaks)
+    max_force = max(strike_forces) if strike_forces else 0.0
+    avg_force = sum(strike_forces) / count if strike_forces else 0.0
+    
     return {
         "strike_count": count,
         "max_strike_force": max_force,
         "avg_strike_force": avg_force,
-        "strike_timestamps": [s[0] for s in strikes],
-        "calibrated_threshold": used_threshold,
-        "raw_detected_count": raw_detected,
+        "strike_timestamps": strike_timestamps,
+        "calibrated_threshold": detect_threshold,
+        "raw_detected_count": count,
     }
-
-
-def _build_net_g_series(imu_rows):
-    series = []
-    fallback_time = 0.0
-    for row in imu_rows:
-        used_fallback_time = False
-        try:
-            timestamp = float(row[0])
-        except (TypeError, ValueError):
-            timestamp = fallback_time
-            used_fallback_time = True
-
-        if used_fallback_time:
-            fallback_time += 10.0
-
-        ax = row[1]
-        ay = row[2]
-        az = row[3]
-        if ax is None or ay is None or az is None:
-            continue
-
-        try:
-            axf = float(ax)
-            ayf = float(ay)
-            azf = float(az)
-        except (TypeError, ValueError):
-            continue
-
-        magnitude = math.sqrt(axf * axf + ayf * ayf + azf * azf) / 9.80665
-        net_g = max(magnitude - 1.0, 0.0)
-        series.append((timestamp, net_g))
-
-    return series
-
-
-def _peak_detect_from_series(series, threshold, min_dist_ms):
-    strikes = []
-    if not series:
-        return strikes
-
-    last_strike_time = series[0][0] - min_dist_ms
-    for timestamp, magnitude in series:
-        if magnitude > threshold:
-            if (timestamp - last_strike_time) > min_dist_ms:
-                strikes.append((timestamp, magnitude))
-                last_strike_time = timestamp
-            elif strikes and magnitude > strikes[-1][1]:
-                strikes[-1] = (timestamp, magnitude)
-                last_strike_time = timestamp
-    return strikes
-
-
-def _calibrate_threshold_to_target(series, min_dist_ms, target_count, base_threshold, base_result):
-    if not series or target_count <= 0:
-        return base_threshold, base_result
-
-    magnitudes = [value for _, value in series]
-    if not magnitudes:
-        return base_threshold, base_result
-
-    low = 0.1
-    high = max(max(magnitudes) + 0.5, base_threshold + 0.5)
-    best_threshold = base_threshold
-    best_strikes = base_result
-    best_diff = abs(len(base_result) - target_count)
-
-    for _ in range(8):
-        if high - low < 0.05:
-            break
-        mid = (low + high) / 2.0
-        candidate = _peak_detect_from_series(series, mid, min_dist_ms)
-        diff = abs(len(candidate) - target_count)
-
-        if diff < best_diff or (diff == best_diff and abs(mid - base_threshold) < abs(best_threshold - base_threshold)):
-            best_diff = diff
-            best_strikes = candidate
-            best_threshold = mid
-
-        if len(candidate) > target_count:
-            low = mid
-        elif len(candidate) < target_count:
-            high = mid
-        else:
-            break
-
-    return best_threshold, best_strikes
 
 
 def interpret_session_metrics(metrics: dict) -> dict:

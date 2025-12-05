@@ -8,9 +8,12 @@ LOG = logging.getLogger("sensor_server.dual_analysis")
 def calculate_shinai_strike_metrics(shinai_rows, threshold=2.0, min_dist_ms=200, window_ms=150):
     """
     Calculate per-strike metrics from shinai tip accel magnitudes.
+    Uses the robust detect_kendo_strikes function from analysis.py for detection.
 
     Returns summary: count, max_force_g, avg_force_g, avg_rms_g, avg_integral, avg_half_width_ms
     """
+    from .analysis import detect_kendo_strikes
+    
     if not shinai_rows:
         return {
             "shinai_strike_count": 0,
@@ -21,8 +24,23 @@ def calculate_shinai_strike_metrics(shinai_rows, threshold=2.0, min_dist_ms=200,
             "shinai_avg_half_width_ms": 0.0,
         }
 
-    # Ensure rows are list of [t, ax, ay, az, gx, gy, gz] or at least first 4 entries
-    # Convert to G units with gravity compensation for peak detection
+    # Use the robust detection from analysis.py
+    # Note: detect_kendo_strikes expects raw rows and handles unit conversion/smoothing internally
+    kendo_stats = detect_kendo_strikes(shinai_rows)
+    timestamps = kendo_stats.get("strike_timestamps", [])
+    
+    if not timestamps:
+        return {
+            "shinai_strike_count": 0,
+            "shinai_max_strike_force": 0.0,
+            "shinai_avg_strike_force": 0.0,
+            "shinai_avg_rms": 0.0,
+            "shinai_avg_integral": 0.0,
+            "shinai_avg_half_width_ms": 0.0,
+        }
+
+    # Prepare data for metric calculation (RMS, Integral, Width)
+    # We need raw G values for this part
     accel_rows = []
     for row in shinai_rows:
         try:
@@ -31,14 +49,16 @@ def calculate_shinai_strike_metrics(shinai_rows, threshold=2.0, min_dist_ms=200,
             ay = float(row[2])
             az = float(row[3])
             mag_acc = math.sqrt(ax*ax + ay*ay + az*az)
-            # Convert m/s? to G units and subtract gravity baseline
-            g_units = (mag_acc / 9.80665) - 1.0
-            if g_units < 0:
-                g_units = 0.0
-            accel_rows.append((t, g_units))
+            
+            # Auto-detect units: if > 8.0, assume m/s^2 and convert to G
+            # This is a simple heuristic but effective for this dataset
+            if mag_acc > 50.0: # Just a safety check, actual check done per-session usually
+                 pass 
+            
+            accel_rows.append((t, mag_acc))
         except Exception:
             continue
-
+            
     if not accel_rows:
         return {
             "shinai_strike_count": 0,
@@ -49,28 +69,19 @@ def calculate_shinai_strike_metrics(shinai_rows, threshold=2.0, min_dist_ms=200,
             "shinai_avg_half_width_ms": 0.0,
         }
 
-    # Direct peak detection on gravity-compensated G values
-    times = [r[0] for r in accel_rows]
+    # Check unit scaling on the full dataset
     mags = [r[1] for r in accel_rows]
-    
-    # Find peaks above threshold
-    timestamps = []
-    for i in range(1, len(mags) - 1):
-        if mags[i] > threshold and mags[i] >= mags[i-1] and mags[i] >= mags[i+1]:
-            # Check minimum distance from previous peak
-            if not timestamps or (times[i] - timestamps[-1]) >= min_dist_ms:
-                timestamps.append(times[i])
+    if np.mean(mags) > 8.0:
+        accel_rows = [(t, m / 9.80665) for t, m in accel_rows]
 
     per_peak_forces = []
     per_peak_rms = []
     per_peak_integrals = []
     per_peak_half_widths = []
 
-    # Build fast access list
-    times = [r[0] for r in accel_rows]
-    mags = [r[1] for r in accel_rows]
-
     per_strike_list = []
+    
+    # Use the timestamps found by the robust algorithm
     for ts in timestamps:
         start_t = ts - window_ms
         end_t = ts + window_ms
