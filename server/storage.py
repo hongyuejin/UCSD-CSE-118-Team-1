@@ -445,6 +445,13 @@ def save_raw_json_payload(directory: Path, raw_text: str) -> Tuple[bool, Any]:
                             "UPDATE sessions SET matched_shinai = ? WHERE id = ?",
                             (new_json, wear_id)
                         )
+                        conn.commit()
+                        # Trigger metric re-computation for the wear session
+                        try:
+                            from .analysis import compute_and_persist_session_metrics
+                            compute_and_persist_session_metrics(wear_id)
+                        except Exception:
+                            LOG.exception("Failed to re-compute metrics for wear session %s", wear_id)
                     except Exception:
                         LOG.exception("Failed to update wear session with matched shinai %s", relpath)
         except Exception:

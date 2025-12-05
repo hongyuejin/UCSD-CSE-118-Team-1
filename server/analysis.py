@@ -602,6 +602,7 @@ def compute_and_persist_session_metrics(session_id: int) -> bool:
     # Energy from wrist gyro if available
     max_tip_speed = None
     energy_cal = None
+    energy_j = None
     try:
         imu_rel = sess.get("imu_csv")
         if imu_rel:
